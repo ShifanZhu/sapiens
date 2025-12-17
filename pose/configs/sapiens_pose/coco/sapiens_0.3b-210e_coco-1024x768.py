@@ -26,7 +26,8 @@ patch_size=16
 num_keypoints=17
 num_epochs=210
 
-bbox_file='data/coco/person_detection_results/COCO_val2017_detections_AP_H_70_person.json'
+# Fix this to your own person detection results file path
+bbox_file='/home/s/data/coco/person_detection_results/COCO_val2017_detections_AP_H_70_person.json'
 # runtime
 train_cfg = dict(max_epochs=num_epochs, val_interval=evaluate_every_n_epochs)
 
@@ -159,7 +160,7 @@ val_pipeline = [
 # datasets
 dataset_coco = dict(
     type='CocoDataset',
-    data_root='data/coco',
+    data_root='/home/s/data/coco', # fix this to your own COCO data path
     data_mode='topdown',
     ann_file='annotations/person_keypoints_train2017.json',
     data_prefix=dict(img='train2017/'),
@@ -187,7 +188,7 @@ val_dataloader = dict(
     sampler=dict(type='DefaultSampler', shuffle=False, round_up=False),
     dataset=dict(
         type='CocoDataset',
-        data_root='data/coco',
+        data_root='/home/s/data/coco', # fix this to your own COCO data path
         data_mode='topdown',
         ann_file='annotations/person_keypoints_val2017.json',
         bbox_file=bbox_file,
@@ -200,6 +201,6 @@ test_dataloader = val_dataloader
 
 # evaluators
 val_evaluator = dict(
-    type='CocoMetric',
-    ann_file='data/coco/annotations/person_keypoints_val2017.json')
+    type='CocoMetric',  # fix this to your own COCO annotation path
+    ann_file='/home/s/data/coco/annotations/person_keypoints_val2017.json')
 test_evaluator = val_evaluator

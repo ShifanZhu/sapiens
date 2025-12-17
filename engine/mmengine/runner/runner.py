@@ -1508,7 +1508,7 @@ class Runner:
         else:
             by_epoch = loop_cfg.pop('by_epoch')
             if by_epoch:
-                loop = EpochBasedTrainLoop(
+                loop = EpochBasedTrainLoop( # by default
                     **loop_cfg, runner=self, dataloader=self._train_dataloader)
             else:
                 loop = IterBasedTrainLoop(
@@ -1689,6 +1689,7 @@ class Runner:
         Returns:
             nn.Module: The model after training.
         """
+        print("\033[96mStarting train method of Runner!\033[0m")
         if is_model_wrapper(self.model):
             ori_model = self.model.module
         else:
@@ -1768,7 +1769,9 @@ class Runner:
 
         self.logger.info(f'\033[96mStarting training!\033[0m')
         # print(f'\033[96m{server_name}, rank:{self._rank}, Starting training!\033[0m')
+        print("is this the start of training?") # yes
         model = self.train_loop.run()  # type: ignore
+        print("is this the end of training?")
         self.logger.info(f'\033[96mDone training!\033[0m')
         # print(f'\033[96m{server_name}, rank:{self._rank}, Done training!\033[0m')
 

@@ -245,6 +245,7 @@ class BaseCocoStyleDataset(BaseDataset):
 
     def _load_annotations(self) -> Tuple[List[dict], List[dict]]:
         """Load data from annotations in COCO format."""
+        print('Loading annotation from ' + self.ann_file)
 
         assert exists(self.ann_file), 'Annotation file does not exist'
 

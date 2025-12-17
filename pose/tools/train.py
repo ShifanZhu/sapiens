@@ -166,6 +166,7 @@ def main():
         print(runner.model)
 
     # start training
+    print('Start running, host: %s' % os.uname()[1])
     runner.train()
 
 

@@ -42,7 +42,7 @@ class UDPHeatmap(BaseKeypointCodec):
     Args:
         input_size (tuple): Image size in [w, h]
         heatmap_size (tuple): Heatmap size in [W, H]
-        heatmap_type (str): The heatmap type to encode the keypoitns. Options
+        heatmap_type (str): The heatmap type to encode the keypoints. Options
             are:
 
             - ``'gaussian'``: Gaussian heatmap
@@ -53,7 +53,7 @@ class UDPHeatmap(BaseKeypointCodec):
             ``heatmap_type=='gaussian'``. Defaults to 2.0
         radius_factor (float): The radius factor of the binary label
             map when ``heatmap_type=='combined'``. The positive region is
-            defined as the neighbor of the keypoit with the radius
+            defined as the neighbor of the keypoint with the radius
             :math:`r=radius_factor*max(W, H)`. Defaults to 0.0546875
         blur_kernel_size (int): The Gaussian blur kernel size of the heatmap
             modulation in DarkPose. Defaults to 11
@@ -165,7 +165,7 @@ class UDPHeatmap(BaseKeypointCodec):
             _K, H, W = heatmaps.shape
             K = _K // 3
 
-            for cls_heatmap in heatmaps[::3]:
+            for cls_heatmap in heatmaps[::3]: # pick 0, 3, 6, ...
                 # Apply Gaussian blur on classification maps
                 ks = 2 * self.blur_kernel_size + 1
                 cv2.GaussianBlur(cls_heatmap, (ks, ks), 0, cls_heatmap)
@@ -173,8 +173,8 @@ class UDPHeatmap(BaseKeypointCodec):
             # valid radius
             radius = self.radius_factor * max(W, H)
 
-            x_offset = heatmaps[1::3].flatten() * radius
-            y_offset = heatmaps[2::3].flatten() * radius
+            x_offset = heatmaps[1::3].flatten() * radius # pick 1, 4, 7, ...
+            y_offset = heatmaps[2::3].flatten() * radius # pick 2, 5, 8, ...
             keypoints, scores = get_heatmap_maximum(heatmaps=heatmaps[::3])
             index = (keypoints[..., 0] + keypoints[..., 1] * W).flatten()
             index += W * H * np.arange(0, K)

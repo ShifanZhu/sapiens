@@ -190,14 +190,14 @@ def generate_udp_gaussian_heatmaps(
     # xy grid
     gaussian_size = 2 * radius + 1
     x = np.arange(0, gaussian_size, 1, dtype=np.float32)
-    y = x[:, None]
+    y = x[:, None] # “keep all rows, and add a singleton dimension after the first one.”
 
     for n, k in product(range(N), range(K)):
         # skip unlabled keypoints
         if keypoints_visible[n, k] < 0.5:
             continue
 
-        mu = (keypoints[n, k] + 0.5).astype(np.int64)
+        mu = (keypoints[n, k] + 0.5).astype(np.int64) # round to nearest integer
         # check that the gaussian has in-bounds part
         left, top = (mu - radius).astype(np.int64)
         right, bottom = (mu + radius + 1).astype(np.int64)
@@ -206,7 +206,7 @@ def generate_udp_gaussian_heatmaps(
             keypoint_weights[n, k] = 0
             continue
 
-        mu_ac = keypoints[n, k]
+        mu_ac = keypoints[n, k] # Sub-pixel accurate Gaussian center
         x0 = y0 = gaussian_size // 2
         x0 += mu_ac[0] - mu[0]
         y0 += mu_ac[1] - mu[1]

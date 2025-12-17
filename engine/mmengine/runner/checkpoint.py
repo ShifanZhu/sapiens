@@ -351,7 +351,8 @@ def load_from_local(filename, map_location):
     filename = osp.expanduser(filename)
     if not osp.isfile(filename):
         raise FileNotFoundError(f'{filename} can not be found.')
-    checkpoint = torch.load(filename, map_location=map_location)
+    # Need to make weights_only to be False to test evaluation
+    checkpoint = torch.load(filename, map_location=map_location, weights_only=False)
     server_name = socket.gethostname().split('.')[0]
     print(f'Done: Loaded checkpoint from {filename} on server: {server_name}')
     return checkpoint

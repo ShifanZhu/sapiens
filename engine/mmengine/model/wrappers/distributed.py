@@ -120,6 +120,7 @@ class MMDistributedDataParallel(DistributedDataParallel):
         Returns:
             Dict[str, torch.Tensor]: A ``dict`` of tensor for logging.
         """
+        print("---in train_step of MMDistributedDataParallel---")
         # Enable automatic mixed precision training context.
         with optim_wrapper.optim_context(self):
             data = self.module.data_preprocessor(data, training=True)
@@ -184,9 +185,9 @@ class MMDistributedDataParallel(DistributedDataParallel):
             dict or list: Results of training or testing mode.
         """
         if isinstance(data, dict):
-            results = self(**data, mode=mode)
+            results = self(**data, mode=mode) # equivalent to self.forward(**data, mode=mode)
         elif isinstance(data, (list, tuple)):
-            results = self(*data, mode=mode)
+            results = self(*data, mode=mode) # equivalent to self.forward(*data, mode=mode)
         else:
             raise TypeError('Output of `data_preprocessor` should be '
                             f'list, tuple or dict, but got {type(data)}')

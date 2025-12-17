@@ -99,6 +99,7 @@ class EpochBasedTrainLoop(BaseLoop):
         self.runner.call_hook('before_train')
 
         while self._epoch < self._max_epochs and not self.stop_training:
+            print("current epoch in EpochBasedTrainLoop:", self._epoch) # goes here
             self.run_epoch()
 
             self._decide_current_val_interval()
@@ -114,7 +115,7 @@ class EpochBasedTrainLoop(BaseLoop):
         """Iterate one epoch."""
         self.runner.call_hook('before_train_epoch')
 
-        self.runner.model.train()
+        self.runner.model.train() # set model to training mode
 
         for idx, data_batch in enumerate(self.dataloader):
             self.run_iter(idx, data_batch)
@@ -134,6 +135,7 @@ class EpochBasedTrainLoop(BaseLoop):
         # synchronization during gradient accumulation process.
         # outputs should be a dict of loss.
 
+        # forward + loss + backward + optimizer
         outputs = self.runner.model.train_step(
             data_batch, optim_wrapper=self.runner.optim_wrapper)
 
@@ -281,6 +283,7 @@ class IterBasedTrainLoop(BaseLoop):
         # as a big epoch and execute the corresponding hook.
         self.runner.call_hook('before_train_epoch')
         while self._iter < self._max_iters and not self.stop_training:
+            print("current iteration in IterBasedTrainLoop:", self._iter)
             self.runner.model.train()
 
             data_batch = next(self.dataloader_iterator)
