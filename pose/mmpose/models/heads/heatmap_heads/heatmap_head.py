@@ -194,7 +194,7 @@ class HeatmapHead(BaseHead):
                 in_channels=in_channels,
                 out_channels=out_channels,
                 kernel_size=kernel_size,
-                stride=2,
+                stride=2, # Each deconv upsamples ×2
                 padding=padding,
                 output_padding=output_padding,
                 bias=False)

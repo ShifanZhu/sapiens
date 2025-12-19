@@ -78,9 +78,10 @@ class TopdownPoseEstimator(BasePoseEstimator):
             data_samples (List[:obj:`PoseDataSample`]): The batch
                 data samples.
 
-        Returns:+
+        Returns:
             dict: A dictionary of losses.
         """
+        # vit-H: Embedding hidden size is 1280, each patch is 16x16, input size is 256x192
         feats = self.extract_feat(inputs) ## tuple of size 1, for vit-H, B x 1280 x 16 x 12
 
         losses = dict()

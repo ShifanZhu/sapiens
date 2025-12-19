@@ -73,6 +73,7 @@ auto_scale_lr = dict(base_batch_size=512) ## default not enabled
 # auto_scale_lr = dict(base_batch_size=512, enable=True) ## enables. Will change LR based on actual batch size this base batch size
 
 # hooks
+# hooks are advanced usage, try to default when not in need
 default_hooks = dict(
     checkpoint=dict(save_best='coco/AP', rule='greater', max_keep_ckpts=-1),
     visualization=dict(type='CustomPoseVisualizationHook', enable=True, interval=vis_every_iters, scale=scale),
@@ -80,8 +81,13 @@ default_hooks = dict(
     )
 
 # codec settings
+# This creates:
+#   target heatmaps: K × 256 × 192 (if stored as H×W inside, MMPose handles layout)
+#   plus per-joint weights (for use_target_weight=True)
 codec = dict(
-    type='UDPHeatmap', input_size=(image_size[0], image_size[1]), heatmap_size=(int(image_size[0]/scale), int(image_size[1]/scale)), sigma=sigma) ## sigma is 2 for 256
+    type='UDPHeatmap', input_size=(image_size[0], image_size[1]), # 1024x768
+    heatmap_size=(int(image_size[0]/scale), int(image_size[1]/scale)), # 1024/4=256, 768/4=192
+    sigma=sigma) ## sigma is 2 for 256
 
 
 # model settings
@@ -91,7 +97,7 @@ model = dict(
         type='PoseDataPreprocessor',
         mean=[123.675, 116.28, 103.53],
         std=[58.395, 57.12, 57.375],
-        bgr_to_rgb=True),
+        bgr_to_rgb=True), # the data preprocessor outputs B x 3 x 1024 x 768
     backbone=dict(
         type='mmpretrain.VisionTransformer',
         arch=model_name,
@@ -106,17 +112,23 @@ model = dict(
         init_cfg=dict(
             type='Pretrained',
             checkpoint=pretrained_checkpoint),
-    ),
+    ), # the backbone outputs a feature map of size: B x embed_dim x 64 x 48 for input 1024x768
     head=dict(
         type='HeatmapHead',
         in_channels=embed_dim,
         out_channels=num_keypoints,
-        deconv_out_channels=(768, 768), ## this will 2x at each step. so total is 4x
-        deconv_kernel_sizes=(4, 4),
+        deconv_out_channels=(768, 768),
+        deconv_kernel_sizes=(4, 4), # this will 2x at each step. so total is 4x
+        # Deconv 1: B × 1024 × 64 × 48 → B × 768 × 128 × 96
+        # Deconv 2: B × 768 × 128 × 96 → B × 768 × 256 × 192
         conv_out_channels=(768, 768),
-        conv_kernel_sizes=(1, 1),
-        loss=dict(type='KeypointMSELoss', use_target_weight=True),
-        decoder=codec),
+        conv_kernel_sizes=(1, 1), # 1×1 is purely mixing information across channels
+        # B × 768 × 256 × 192 → B × 768 × 256 × 192
+        loss=dict(type='KeypointMSELoss', use_target_weight=True), # joints can be weighted differently
+        decoder=codec), # head should match the encoder defined above
+                        # So the head is expected to output heatmaps of size: H × W = 256 × 192
+                        # After deconvs, the heatmap outputs B × 17 × 256 × 192
+                        # Then the decoded keypoints are B × 17 × 2
     test_cfg=dict(
         flip_test=True,
         flip_mode='heatmap',
@@ -199,7 +211,7 @@ val_dataloader = dict(
 
 test_dataloader = val_dataloader
 
-# evaluators
+# evaluation metrics and evaluator
 val_evaluator = dict(
     type='CocoMetric',  # fix this to your own COCO annotation path
     ann_file='/home/s/data/coco/annotations/person_keypoints_val2017.json')
