@@ -791,6 +791,7 @@ class BaseDataset(Dataset):
             Any: Depends on ``self.pipeline``.
         """
         data_info = self.get_data_info(idx)
+        # The exact moment call train_pipeline or test_pipeline defined in config py file
         return self.pipeline(data_info)
 
     @force_full_init
