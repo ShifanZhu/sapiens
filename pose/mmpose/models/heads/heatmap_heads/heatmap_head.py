@@ -90,6 +90,15 @@ class HeatmapHead(BaseHead):
 
         self.use_silu = use_silu ## instance norm + silu instead of batchnorm + relu
 
+        # In config file, we defined:
+        # deconv_out_channels=(768, 768),
+        # deconv_kernel_sizes=(4, 4), # this will 2x at each step. so total is 4x
+        # # Deconv 1: B × 1024 × 64 × 48 → B × 768 × 128 × 96
+        # # Deconv 2: B × 768 × 128 × 96 → B × 768 × 256 × 192
+
+        # In paper: By default, three deconvolutional layers with batch normalization and ReLU activation are used.
+        # Each layer has 768 filters with 4 × 4 kernel. The stride is 2. A 1 × 1 convolutional layer is 
+        # added at last to generate predicted heatmaps {H1 . . . Hk} for all k key points.
         if deconv_out_channels:
             if deconv_kernel_sizes is None or len(deconv_out_channels) != len(
                     deconv_kernel_sizes):
@@ -99,6 +108,9 @@ class HeatmapHead(BaseHead):
                     f'mismatched lengths {deconv_out_channels} and '
                     f'{deconv_kernel_sizes}')
 
+            # In config file, For sapiens 0.3b model (1024D), we have:
+            # Deconv 1: B × 1024 × 64 × 48 → B × 768 × 128 × 96
+            # Deconv 2: B × 768 × 128 × 96 → B × 768 × 256 × 192
             self.deconv_layers = self._make_deconv_layers(
                 in_channels=in_channels,
                 layer_out_channels=deconv_out_channels,
@@ -108,6 +120,10 @@ class HeatmapHead(BaseHead):
         else:
             self.deconv_layers = nn.Identity()
 
+        # In config file, we defined:
+        # conv_out_channels=(768, 768),
+        # conv_kernel_sizes=(1, 1), # 1×1 is purely mixing information across channels
+        # # B × 768 × 256 × 192 → B × 768 × 256 × 192
         if conv_out_channels:
             if conv_kernel_sizes is None or len(conv_out_channels) != len(
                     conv_kernel_sizes):
@@ -168,7 +184,7 @@ class HeatmapHead(BaseHead):
 
         return nn.Sequential(*layers)
 
-    def _make_deconv_layers(self, in_channels: int,
+    def _make_deconv_layers(self, in_channels: int, # 
                             layer_out_channels: Sequence[int],
                             layer_kernel_sizes: Sequence[int]) -> nn.Module:
         """Create deconvolutional layers by given parameters."""
@@ -231,6 +247,13 @@ class HeatmapHead(BaseHead):
         Returns:
             Tensor: output heatmap.
         """
+        # Corresponding to the sentence in paper: Our method simply adds a few deconvolutional layers 
+        # over the last convolution stage in the ResNet, called C5. Illustrated in Fig. 1(c).
+        # Why choose the “last” one?
+        # Many backbones can output multiple stages: e.g.
+        # CNN ResNet: C2, C3, C4, C5
+        # ViT with “out_indices”: could output intermediate layers
+        # The head needs a single input tensor, so the convention is: use the last one (highest-level/deepest).
         x = feats[-1]
 
         x = self.deconv_layers(x)

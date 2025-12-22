@@ -82,13 +82,33 @@ default_hooks = dict(
 
 # codec settings
 # This creates:
-#   target heatmaps: K × 256 × 192 (if stored as H×W inside, MMPose handles layout)
+#   target heatmaps: K × 192 × 256 (if stored as H×W inside, MMPose handles layout)
 #   plus per-joint weights (for use_target_weight=True)
 codec = dict(
-    type='UDPHeatmap', input_size=(image_size[0], image_size[1]), # 1024x768
-    heatmap_size=(int(image_size[0]/scale), int(image_size[1]/scale)), # 1024/4=256, 768/4=192
+    type='UDPHeatmap', input_size=(image_size[0], image_size[1]), # 768x1024
+    heatmap_size=(int(image_size[0]/scale), int(image_size[1]/scale)), # 768/4=192, 1024/4=256
     sigma=sigma) ## sigma is 2 for 256
 
+# Backbone input after preprocess:
+# B × 3 × 768 × 1024
+
+# Backbone output featmap:
+# B × 1024 × 48 × 64
+
+# Deconv 1:
+# B × 1024 × 48 × 64 → B × 768 × 96 × 128
+
+# Deconv 2:
+# B × 768 × 96 × 128 → B × 768 × 192 × 256
+
+# Conv 1×1 layers:
+# B × 768 × 192 × 256 → B × 768 × 192 × 256
+
+# Conv 1×1 layers:
+# B × 768 × 192 × 256 → B × 768 × 192 × 256
+
+# Final heatmap:
+# B × 17 × 192 × 256
 
 # model settings
 model = dict(
@@ -97,7 +117,7 @@ model = dict(
         type='PoseDataPreprocessor',
         mean=[123.675, 116.28, 103.53],
         std=[58.395, 57.12, 57.375],
-        bgr_to_rgb=True), # the data preprocessor outputs B x 3 x 1024 x 768
+        bgr_to_rgb=True), # the data preprocessor outputs B x 3 x 768 x 1024
     backbone=dict(
         type='mmpretrain.VisionTransformer',
         arch=model_name,
@@ -112,22 +132,22 @@ model = dict(
         init_cfg=dict(
             type='Pretrained',
             checkpoint=pretrained_checkpoint),
-    ), # the backbone outputs a feature map of size: B x embed_dim x 64 x 48 for input 1024x768
+    ), # the backbone outputs a feature map of size: B x embed_dim 48 x 64 for input 768x1024 (pathch size 16)
     head=dict(
-        type='HeatmapHead',
+        type='HeatmapHead', # define ConvTranspose2d deconv head H_out = s*(H_in-1)+kernel_size - 2*padding
         in_channels=embed_dim,
         out_channels=num_keypoints,
         deconv_out_channels=(768, 768),
         deconv_kernel_sizes=(4, 4), # this will 2x at each step. so total is 4x
-        # Deconv 1: B × 1024 × 64 × 48 → B × 768 × 128 × 96
-        # Deconv 2: B × 768 × 128 × 96 → B × 768 × 256 × 192
+        # Deconv 1: B × 768 × 48 × 64 → B × 768 × 96 × 128
+        # Deconv 2: B × 768 × 96 × 128 → B × 768 × 192 × 256
         conv_out_channels=(768, 768),
         conv_kernel_sizes=(1, 1), # 1×1 is purely mixing information across channels
-        # B × 768 × 256 × 192 → B × 768 × 256 × 192
+        # B × 768 × 192 × 256 → B × 768 × 192 × 256
         loss=dict(type='KeypointMSELoss', use_target_weight=True), # joints can be weighted differently
         decoder=codec), # head should match the encoder defined above
-                        # So the head is expected to output heatmaps of size: H × W = 256 × 192
-                        # After deconvs, the heatmap outputs B × 17 × 256 × 192
+                        # So the head is expected to output heatmaps of size: H × W = 192 × 256
+                        # After deconvs, the heatmap outputs B × 17 × 192 × 256
                         # Then the decoded keypoints are B × 17 × 2
     test_cfg=dict(
         flip_test=True,
