@@ -39,7 +39,7 @@ class NavCmdHead(BaseHead):
 
     def __init__(self,
                  in_channels: Union[int, Sequence[int]],
-                 out_channels: int = 3,  # keep name for compatibility; must be 3
+                 out_channels: int = 3,  # keep name for compatibility; must be 3 (vx,vy,vyaw)
                  deconv_out_channels: OptIntSeq = None,
                  deconv_kernel_sizes: OptIntSeq = None,
                  conv_out_channels: OptIntSeq = (256, ),
@@ -64,7 +64,7 @@ class NavCmdHead(BaseHead):
             raise ValueError(f'NavCmdHead must output 3 dims (vx, vy, v_yaw), got out_channels={out_channels}')
 
         self.in_channels = in_channels
-        self.out_channels = 3
+        self.out_channels = 3 # vx, vy, v_yaw
         self.use_silu = use_silu  # instance norm + silu instead of batchnorm + relu
 
         # ---- optional deconv stack (usually not needed for command regression) ----
@@ -111,17 +111,14 @@ class NavCmdHead(BaseHead):
             else:
                 mlp_layers.append(nn.ReLU(inplace=True))
             prev = h
-        mlp_layers.append(nn.Linear(prev, 3))
+        mlp_layers.append(nn.Linear(prev, out_channels))
         self.mlp = nn.Sequential(*mlp_layers)
 
-        # Optional output activation (rarely needed). Examples: "tanh"
-        self.final_act = final_act
-        if final_act is None:
-            self.out_act = nn.Identity()
-        elif final_act.lower() == 'tanh':
-            self.out_act = nn.Tanh()
-        else:
-            raise ValueError(f'Unsupported final_act={final_act}. Use None or "tanh".')
+        self.out_act = nn.Tanh()
+        self.register_buffer(
+            'cmd_scale',
+            torch.tensor([1.0, 0.5, 0.5], dtype=torch.float32) # clip vx to ±1.0 m/s, vy to ±0.5 m/s, yaw rate to ±0.5 rad/s
+        )
 
         # ---- loss ----
         # Default: SmoothL1Loss(beta=1.0)
@@ -282,13 +279,14 @@ class NavCmdHead(BaseHead):
         Returns:
             Tensor: (B,3) = (vx, vy, v_yaw)
         """
-        x = feats[-1]
-        x = self.deconv_layers(x)
-        x = self.conv_layers(x)
-        x = self.pool(x)              # (B,C,1,1)
-        x = torch.flatten(x, 1)       # (B,C)
-        cmd = self.mlp(x)             # (B,3)
-        cmd = self.out_act(cmd)
+        x = feats[-1] # (B,1024,48,64) Pick the most semantic / deepest feature map from the backbone.
+        x = self.deconv_layers(x) # (B,1024,48,64) Optionally upsample the feature map to get spatially richer features (we do not need here).
+        x = self.conv_layers(x) # (B,256,48,64) Optionally conv layers to refine features.
+        x = self.pool(x)              # (B,256,1,1) Global average pooling to get a single feature vector per sample.
+        x = torch.flatten(x, 1)       # (B,256)
+        cmd = self.mlp(x)             # (B,256) -> (B,256) -> (B,128) -> (B,out_channels=3)  Unconstrained
+        cmd = self.out_act(cmd)       # (B,out_channels=3) (tanh to [-1,1])
+        cmd = cmd * self.cmd_scale # per-dimension scaling (vx to ±1.0 m/s, vy to ±0.5 m/s, yaw rate to ±0.5 rad/s)
         return cmd
 
     def predict(self,
@@ -329,15 +327,21 @@ class NavCmdHead(BaseHead):
         pred_cmd = self.forward(feats)  # (B,3)
         gt_cmd = self._get_gt_cmd(batch_data_samples, device=pred_cmd.device)  # (B,3)
 
+        # clip gt to same range
+        gt_cmd = gt_cmd.clamp(
+            torch.tensor([-1.0, -0.5, -0.5], device=gt_cmd.device),
+            torch.tensor([ 1.0,  0.5,  0.5], device=gt_cmd.device),
+        )
+
         # Train in normalized space if mean/std provided
-        pred_n = self._normalize_cmd(pred_cmd)
-        gt_n = self._normalize_cmd(gt_cmd)
+        # pred_n = self._normalize_cmd(pred_cmd)
+        # gt_n = self._normalize_cmd(gt_cmd)
 
         losses = {}
 
         # If using torch.nn SmoothL1Loss with reduction='none': returns (B,3)
         # If using a registry loss that returns scalar directly, we handle both.
-        loss_raw = self.loss_module(pred_n, gt_n)
+        loss_raw = self.loss_module(pred_cmd, gt_cmd)
         if isinstance(loss_raw, Tensor) and loss_raw.ndim == 2 and loss_raw.shape[-1] == 3:
             loss_val = self._weighted_loss_reduce(loss_raw) * self.loss_weight
         else:
@@ -349,8 +353,8 @@ class NavCmdHead(BaseHead):
         # Metrics in real units (unnormalized)
         with torch.no_grad():
             err = (pred_cmd - gt_cmd)  # (B,3)
-            mae = err.abs().mean(dim=0)     # (3,)
-            rmse = torch.sqrt((err ** 2).mean(dim=0) + 1e-12)
+            mae = err.abs().mean(dim=0)     # (3,)  Mean Absolute Error (focuse more on average error)
+            rmse = torch.sqrt((err ** 2).mean(dim=0) + 1e-12) # (3,) Root Mean Square Error (focus more on outliers)
 
             losses['mae_vx'] = mae[0]
             losses['mae_vy'] = mae[1]
