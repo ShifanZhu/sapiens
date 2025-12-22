@@ -193,13 +193,13 @@ class HeatmapHead(BaseHead):
         for out_channels, kernel_size in zip(layer_out_channels,
                                              layer_kernel_sizes):
             if kernel_size == 4:
-                padding = 1
+                padding = 1 # to make sure H_out = 2*(H_in-1)+4-2*1+0 = 2*H_in
                 output_padding = 0
             elif kernel_size == 3:
-                padding = 1
+                padding = 1 # to make sure H_out = 2*(H_in-1)+3-2*1+1 = 2*H_in
                 output_padding = 1
             elif kernel_size == 2:
-                padding = 0
+                padding = 0 # to make sure H_out = 2*(H_in-1)+2-2*0+0 = 2*H_in
                 output_padding = 0
             else:
                 raise ValueError(f'Unsupported kernel size {kernel_size} for'

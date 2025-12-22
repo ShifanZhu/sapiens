@@ -134,7 +134,7 @@ model = dict(
             checkpoint=pretrained_checkpoint),
     ), # the backbone outputs a feature map of size: B x embed_dim 48 x 64 for input 768x1024 (pathch size 16)
     head=dict(
-        type='HeatmapHead', # define ConvTranspose2d deconv head H_out = s*(H_in-1)+kernel_size - 2*padding
+        type='HeatmapHead', # define ConvTranspose2d(deconv)  H_out = s*(H_in-1)+kernel_size-2*padding+output_padding
         in_channels=embed_dim,
         out_channels=num_keypoints,
         deconv_out_channels=(768, 768),
