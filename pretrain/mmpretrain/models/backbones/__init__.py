@@ -60,6 +60,7 @@ from .van import VAN
 from .vgg import VGG
 from .vig import PyramidVig, Vig
 from .vision_transformer import VisionTransformer, TransformerEncoderLayer
+from .vision_transformer_with_depth import VisionTransformerWithDepth
 from .vision_transformer2 import VisionTransformer2
 from .vit_eva02 import ViTEVA02
 from .vit_sam import ViTSAM
@@ -82,6 +83,7 @@ __all__ = [
     'MobileNetV2',
     'MobileNetV3',
     'VisionTransformer',
+    'VisionTransformerWithDepth',
     'TransformerEncoderLayer',
     'SwinTransformer',
     'TNT',
