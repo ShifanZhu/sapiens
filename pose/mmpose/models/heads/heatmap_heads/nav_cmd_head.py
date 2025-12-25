@@ -45,6 +45,15 @@ class NavCmdHead(BaseHead):
                  conv_out_channels: OptIntSeq = (256, ),
                  conv_kernel_sizes: OptIntSeq = (3, ),
                  mlp_hidden_dims: Sequence[int] = (256, 128),
+                 # Optional reference-conditioning (FiLM) on a ref embedding
+                 ref_in_channels: Optional[int] = None,
+                 film_hidden_dim: int = 256,
+                 # Optional cached ref embedding (frozen backbone use-case)
+                 cache_ref_emb: bool = False,
+                 ref_cache_keys: Sequence[str] = ('sequence_id', 'seq_id', 'track_id', 'video_id'),
+                 ref_flag_keys: Sequence[str] = ('is_ref', 'is_ref_frame', 'is_first_frame'),
+                 ref_frame_idx_key: Optional[str] = 'frame_idx',
+                 ref_from_feats: bool = False,
                  final_act: Optional[str] = None,
                  use_silu: bool = True,
                  # If we prefer registry-built losses, set e.g.:
@@ -66,6 +75,14 @@ class NavCmdHead(BaseHead):
         self.in_channels = in_channels
         self.out_channels = 3 # vx, vy, v_yaw
         self.use_silu = use_silu  # instance norm + silu instead of batchnorm + relu
+        self.ref_in_channels = ref_in_channels
+        # Cache ref embeddings per sequence/track (CPU dict) for frozen-backbone use.
+        self.cache_ref_emb = cache_ref_emb
+        self.ref_cache_keys = tuple(ref_cache_keys)
+        self.ref_flag_keys = tuple(ref_flag_keys)
+        self.ref_frame_idx_key = ref_frame_idx_key
+        self.ref_from_feats = ref_from_feats
+        self._ref_cache = {}
 
         # ---- optional deconv stack (usually not needed for command regression) ----
         if deconv_out_channels:
@@ -98,6 +115,24 @@ class NavCmdHead(BaseHead):
             in_channels = conv_out_channels[-1]
         else:
             self.conv_layers = nn.Identity()
+
+        # If we derive ref_emb from pooled features, optionally project to ref_in_channels.
+        self.ref_from_feat_proj = None
+        if self.ref_in_channels is not None and self.ref_from_feats:
+            if self.ref_in_channels != in_channels:
+                self.ref_from_feat_proj = nn.Linear(in_channels, self.ref_in_channels)
+
+        # ---- optional FiLM conditioning from reference embedding ----
+        # Produces per-channel (gamma, beta) to modulate the feature map.
+        if self.ref_in_channels is not None:
+            film_layers = [
+                nn.Linear(self.ref_in_channels, film_hidden_dim),
+                nn.SiLU(inplace=True) if self.use_silu else nn.ReLU(inplace=True),
+                nn.Linear(film_hidden_dim, 2 * in_channels),
+            ]
+            self.film = nn.Sequential(*film_layers)
+        else:
+            self.film = None
 
         # ---- global pooling + MLP to (vx, vy, v_yaw) ----
         self.pool = nn.AdaptiveAvgPool2d(1)
@@ -253,6 +288,128 @@ class NavCmdHead(BaseHead):
 
         return torch.stack(gts, dim=0)  # (B,3)
 
+    # We may condition on a reference embedding (e.g., from target human images)
+    # Instead of passing one image, we may take severfal images and average their embeddings.
+    def _get_ref_emb(self, batch_data_samples: OptSampleList, device: torch.device) -> Optional[Tensor]:
+        """Extract reference embedding tensor of shape (B, ref_in_channels) if present."""
+        if self.ref_in_channels is None:
+            return None
+        refs = []
+        for d in batch_data_samples:
+            ref = None
+            if hasattr(d, 'gt_instance_labels') and d.gt_instance_labels is not None:
+                if hasattr(d.gt_instance_labels, 'ref_emb'):
+                    ref = d.gt_instance_labels.ref_emb
+            if ref is None and hasattr(d, 'gt_fields') and d.gt_fields is not None:
+                if hasattr(d.gt_fields, 'ref_emb'):
+                    ref = d.gt_fields.ref_emb
+            if ref is None and hasattr(d, 'metainfo') and d.metainfo is not None:
+                if 'ref_emb' in d.metainfo:
+                    ref = d.metainfo['ref_emb']
+            if ref is None:
+                refs.append(None)
+                continue
+            ref_t = torch.as_tensor(ref, dtype=torch.float32, device=device).view(-1)
+            refs.append(ref_t)
+
+        if all(r is None for r in refs):
+            return None
+
+        for r in refs:
+            if r is None:
+                raise KeyError(
+                    'Reference embedding missing for some samples. Expected one of:\n'
+                    '  - sample.gt_instance_labels.ref_emb\n'
+                    '  - sample.gt_fields.ref_emb\n'
+                    "  - sample.metainfo['ref_emb']\n"
+                )
+        return torch.stack(refs, dim=0)
+
+    def _get_ref_cache_key(self, data_sample) -> Optional[Tuple[str, str]]:
+        if not hasattr(data_sample, 'metainfo') or data_sample.metainfo is None:
+            return None
+        # First matching key in metainfo is used as cache key (e.g., sequence_id).
+        for key in self.ref_cache_keys:
+            if key in data_sample.metainfo:
+                return (key, str(data_sample.metainfo[key]))
+        return None
+
+    def _is_ref_sample(self, data_sample) -> bool:
+        if not hasattr(data_sample, 'metainfo') or data_sample.metainfo is None:
+            return False
+        # A ref frame can be flagged explicitly, or implicitly by frame_idx==0.
+        for key in self.ref_flag_keys:
+            if key in data_sample.metainfo:
+                return bool(data_sample.metainfo[key])
+        if self.ref_frame_idx_key and self.ref_frame_idx_key in data_sample.metainfo:
+            return int(data_sample.metainfo[self.ref_frame_idx_key]) == 0
+        return False
+
+    def _compute_ref_emb_from_x(self, x: Tensor) -> Tensor:
+        # Pool the feature map into a single vector per sample for ref_emb.
+        ref = self.pool(x)
+        ref = torch.flatten(ref, 1)
+        if self.ref_from_feat_proj is not None:
+            ref = self.ref_from_feat_proj(ref)
+        elif self.ref_in_channels is not None and ref.shape[1] != self.ref_in_channels:
+            raise ValueError(
+                'ref_from_feats is enabled but ref_in_channels does not match '
+                f'pooled feature dim ({ref.shape[1]} != {self.ref_in_channels}).'
+            )
+        return ref
+
+    def _get_or_build_ref_emb(self, x: Tensor, batch_data_samples: OptSampleList) -> Optional[Tensor]:
+        """Resolve ref embeddings via samples and/or cache."""
+        if self.ref_in_channels is None:
+            return None
+
+        # 1) Prefer explicit ref_emb passed in data samples.
+        ref_emb = self._get_ref_emb(batch_data_samples, device=x.device)
+        if ref_emb is not None:
+            if self.cache_ref_emb:
+                # Store on CPU to avoid GPU memory growth.
+                for i, d in enumerate(batch_data_samples):
+                    key = self._get_ref_cache_key(d)
+                    if key is not None:
+                        self._ref_cache[key] = ref_emb[i].detach().cpu()
+            return ref_emb
+
+        if not self.cache_ref_emb:
+            return None
+
+        # 2) If enabled, build cache entry from ref frame features.
+        keys = [self._get_ref_cache_key(d) for d in batch_data_samples]
+        need_build = self.ref_from_feats and any(
+            self._is_ref_sample(d) and k is not None and k not in self._ref_cache
+            for d, k in zip(batch_data_samples, keys)
+        )
+        ref_from_x = self._compute_ref_emb_from_x(x) if need_build else None
+
+        if need_build:
+            for i, (d, key) in enumerate(zip(batch_data_samples, keys)):
+                if key is None or not self._is_ref_sample(d):
+                    continue
+                self._ref_cache[key] = ref_from_x[i].detach().cpu()
+
+        # 3) Load ref_emb for each sample from cache and move to GPU.
+        refs = []
+        missing = []
+        for i, key in enumerate(keys):
+            if key is None or key not in self._ref_cache:
+                missing.append(i)
+                refs.append(None)
+            else:
+                refs.append(self._ref_cache[key].to(x.device))
+
+        if missing:
+            raise KeyError(
+                f'Reference embedding not found in cache for samples: {missing}. '
+                'Provide ref_emb in data samples or mark the ref frame with a ref flag '
+                'and enable ref_from_feats.'
+            )
+
+        return torch.stack(refs, dim=0)
+
     def _normalize_cmd(self, cmd: Tensor) -> Tensor:
         """Apply optional (cmd - mean) / std."""
         if self.cmd_mean is not None:
@@ -270,11 +427,16 @@ class NavCmdHead(BaseHead):
 
     # ------------------------- core API -------------------------
 
-    def forward(self, feats: Tuple[Tensor]) -> Tensor:
+    def forward(self,
+                feats: Tuple[Tensor],
+                ref_emb: Optional[Tensor] = None,
+                batch_data_samples: OptSampleList = None) -> Tensor:
         """Forward.
 
         Args:
             feats: Tuple of multi-scale features. We use feats[-1] as (B,C,H,W).
+            ref_emb: Optional reference embedding (B, ref_in_channels) for FiLM conditioning.
+            batch_data_samples: Optional samples for resolving cached ref embeddings.
 
         Returns:
             Tensor: (B,3) = (vx, vy, v_yaw)
@@ -282,6 +444,14 @@ class NavCmdHead(BaseHead):
         x = feats[-1] # (B,1024,48,64) Pick the most semantic / deepest feature map from the backbone.
         x = self.deconv_layers(x) # (B,1024,48,64) Optionally upsample the feature map to get spatially richer features (we do not need here).
         x = self.conv_layers(x) # (B,256,48,64) Optionally conv layers to refine features.
+        # todo: is it best to apply FiLM after deconv/convs? or better to be before deconv/convs?
+        if self.film is not None:
+            if ref_emb is None and batch_data_samples is not None:
+                ref_emb = self._get_or_build_ref_emb(x, batch_data_samples)
+            if ref_emb is not None:
+                gamma_beta = self.film(ref_emb)  # (B, 2C)
+                gamma, beta = gamma_beta.chunk(2, dim=1)
+                x = x * (1.0 + gamma[:, :, None, None]) + beta[:, :, None, None]
         x = self.pool(x)              # (B,256,1,1) Global average pooling to get a single feature vector per sample.
         x = torch.flatten(x, 1)       # (B,256)
         cmd = self.mlp(x)             # (B,256) -> (B,256) -> (B,128) -> (B,out_channels=3)  Unconstrained
@@ -298,7 +468,7 @@ class NavCmdHead(BaseHead):
         Returns:
             List[InstanceData]: length B; each InstanceData has field `nav_cmd` (Tensor(3,))
         """
-        pred_cmd = self.forward(feats)  # (B,3)
+        pred_cmd = self.forward(feats, batch_data_samples=batch_data_samples)  # (B,3)
 
         # Optionally unnormalize outputs for logging / deployment
         # (Only do this if we *trained* in normalized space and want real units here.)
@@ -324,7 +494,7 @@ class NavCmdHead(BaseHead):
         Returns:
             dict of losses/metrics
         """
-        pred_cmd = self.forward(feats)  # (B,3)
+        pred_cmd = self.forward(feats, batch_data_samples=batch_data_samples)  # (B,3)
         gt_cmd = self._get_gt_cmd(batch_data_samples, device=pred_cmd.device)  # (B,3)
 
         # clip gt to same range
