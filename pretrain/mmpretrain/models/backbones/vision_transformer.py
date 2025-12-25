@@ -109,10 +109,26 @@ class TransformerEncoderLayer(BaseModule):
                 nn.init.normal_(m.bias, std=1e-6)
 
     def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = self.ffn(self.ln2(x), identity=x)
+        x = x + self.attn(self.ln1(x)) # (B, N+1, C) → (B, N+1, C)
+        x = self.ffn(self.ln2(x), identity=x) # (B, N+1, C) -> higher N -> (B, N+1, C)
         return x
 
+# One concrete example (so you can sanity check)
+
+# If:
+# input image 224×224
+# patch 16 → Hp=14, Wp=14, N=196
+# with cls token → E=1, L=197
+# embed dim C=1024 (sapiens_0.3b)
+
+# Then:
+# after patch_embed: (B, 196, 1024)
+# after concat cls: (B, 197, 1024)
+# through all layers: still (B, 197, 1024)
+# out_type:
+# cls_token → (B, 1024)
+# featmap → (B, 1024, 14, 14)
+# raw → (B, 197, 1024)
 
 @MODELS.register_module()
 class VisionTransformer(BaseBackbone):
@@ -402,7 +418,7 @@ class VisionTransformer(BaseBackbone):
         self.out_indices = out_indices
 
         # stochastic depth decay rule
-        dpr = np.linspace(0, drop_path_rate, self.num_layers)
+        dpr = np.linspace(0, drop_path_rate, self.num_layers) # make deeper layers more likely to be dropped
 
         self.layers = ModuleList()
         if isinstance(layer_cfgs, dict):
@@ -455,17 +471,23 @@ class VisionTransformer(BaseBackbone):
             if self.pos_embed is not None:
                 trunc_normal_(self.pos_embed, std=0.02)
 
+    # This function is a checkpoint-loading hook that makes pretrained position embeddings compatible 
+    # with your current ViT configuration (image size / patch grid / whether you use a cls token).
     def _prepare_pos_embed(self, state_dict, prefix, *args, **kwargs):
         name = prefix + 'pos_embed'
         if name not in state_dict.keys():
             return
 
         ckpt_pos_embed_shape = state_dict[name].shape
-        if (not self.with_cls_token
+        if (not self.with_cls_token # do not use cls token
+                # and checkpoint has one extra token compared to the model
                 and ckpt_pos_embed_shape[1] == self.pos_embed.shape[1] + 1):
             # Remove cls token from state dict if it's not used.
-            state_dict[name] = state_dict[name][:, 1:]
+            # before: (1, L_ckpt, C)  after: (1, L_ckpt-1, C)
+            state_dict[name] = state_dict[name][:, 1:] # almost always the cls token position embedding at index 0
             ckpt_pos_embed_shape = state_dict[name].shape
+        # If token length is odd, it’s often N + 1 (cls + patches), because N is typically a square number 
+        # (e.g., 196, 256, 576…)
         elif (not self.with_cls_token
                 and ckpt_pos_embed_shape[1] % 2 == 1):
             # beware, this is modification to remove class token when interpolation is required.
@@ -474,6 +496,7 @@ class VisionTransformer(BaseBackbone):
             state_dict[name] = state_dict[name][:, 1:]
             ckpt_pos_embed_shape = state_dict[name].shape
 
+        # If shapes still don’t match: interpolate position embeddings
         if self.pos_embed.shape != ckpt_pos_embed_shape:
             from mmengine.logging import MMLogger
             logger = MMLogger.get_current_instance()
@@ -531,31 +554,31 @@ class VisionTransformer(BaseBackbone):
                 for param in self.ln2.parameters():
                     param.requires_grad = False
 
-    def forward(self, x):
-        B = x.shape[0]
+    def forward(self, x): # x: (B, Cin, H, W)
+        B = x.shape[0] # batch size
 
-        x, patch_resolution = self.patch_embed(x)
+        x, patch_resolution = self.patch_embed(x) # (B, N, C), (Hp, Wp) = ...  where N=Hp*Wp, C=embed_dims(1024)
 
         if self.cls_token is not None:
-            cls_token = self.cls_token.expand(B, -1, -1)
-            x = torch.cat((cls_token, x), dim=1)
+            cls_token = self.cls_token.expand(B, -1, -1) # (B, 1, C)
+            x = torch.cat((cls_token, x), dim=1) # (B, N+1, C)
 
-        x = x + resize_pos_embed(
-            self.pos_embed,
+        x = x + resize_pos_embed( # resized pos embed is (1, N+1, C)
+            self.pos_embed, # (1, N+1, C)
             self.patch_resolution,
             patch_resolution,
             mode=self.interpolate_mode,
             num_extra_tokens=self.num_extra_tokens)
-        x = self.drop_after_pos(x)
+        x = self.drop_after_pos(x) # (B, N+1, C)
 
-        x = self.pre_norm(x) ## B x (num tokens) x embed_dim
+        x = self.pre_norm(x) ## B x (N+1) x embed_dim
 
         outs = []
         for i, layer in enumerate(self.layers):
-            x = layer(x)
+            x = layer(x) # (B, N+1, C)
 
             if i == len(self.layers) - 1 and self.final_norm:
-                x = self.ln1(x)
+                x = self.ln1(x) # (B, N+1, C)
 
             if i in self.out_indices:
                 outs.append(self._format_output(x, patch_resolution))
@@ -564,17 +587,17 @@ class VisionTransformer(BaseBackbone):
 
     def _format_output(self, x, hw):
         if self.out_type == 'raw':
-            return x
+            return x # (B, N+1, C)
         if self.out_type == 'cls_token':
-            return x[:, 0]
+            return x[:, 0] # (B, C)
 
-        patch_token = x[:, self.num_extra_tokens:]
+        patch_token = x[:, self.num_extra_tokens:] # (B, N, C)
         if self.out_type == 'featmap':
             B = x.size(0)
             # (B, N, C) -> (B, H, W, C) -> (B, C, H, W)
             return patch_token.reshape(B, *hw, -1).permute(0, 3, 1, 2)
         if self.out_type == 'avg_featmap':
-            return self.ln2(patch_token.mean(dim=1))
+            return self.ln2(patch_token.mean(dim=1)) # (B, N, C) -> (B, C)
 
     def get_layer_depth(self, param_name: str, prefix: str = ''):
         """Get the layer-wise depth of a parameter.

@@ -14,6 +14,7 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn as nn
+from mmengine.model.weight_init import trunc_normal_
 
 from mmpretrain.registry import MODELS
 from ..utils import resize_pos_embed
@@ -45,6 +46,10 @@ class VisionTransformerWithDepth(VisionTransformer):
             If None, you need to pass depth embeddings in forward().
         use_depth_projection (bool): Whether to project depth to match RGB dimension. Defaults to True.
         depth_projection_type (str): Type of projection - 'linear' or 'mlp'. Defaults to 'linear'.
+        default_num_depth_tokens (int, optional): Fallback number of depth tokens when none
+            can be loaded. If None, depth is skipped when missing. Defaults to None.
+        depth_token_drop_rate (float): Probability of masking depth tokens during training
+            for robustness. Defaults to 0.0.
         **kwargs: Same args as VisionTransformer.
     """
     
@@ -53,6 +58,8 @@ class VisionTransformerWithDepth(VisionTransformer):
                  depth_embed_path: Optional[str] = None,
                  use_depth_projection: bool = True,
                  depth_projection_type: str = 'linear',
+                 default_num_depth_tokens: Optional[int] = None,
+                 depth_token_drop_rate: float = 0.0,
                  **kwargs):
         # First call the parent VisionTransformer init
         super(VisionTransformerWithDepth, self).__init__(**kwargs)
@@ -61,6 +68,8 @@ class VisionTransformerWithDepth(VisionTransformer):
         self.depth_embed_dim = depth_embed_dim
         self.depth_embed_path = depth_embed_path
         self.use_depth_projection = use_depth_projection
+        self.default_num_depth_tokens = default_num_depth_tokens
+        self.depth_token_drop_rate = depth_token_drop_rate
         
         # Need to project depth embeddings to match RGB dimension
         # RGB embeddings are embed_dims (like 1536 for sapiens_1b)
@@ -84,7 +93,17 @@ class VisionTransformerWithDepth(VisionTransformer):
             assert depth_embed_dim == self.embed_dims, \
                 f"Without projection, depth_embed_dim ({depth_embed_dim}) must equal embed_dims ({self.embed_dims})"
             self.depth_proj = nn.Identity()
-        
+
+        # Learned embeddings for missing depth and masked depth tokens.
+        # missing_depth_embed is in depth_embed_dim space before projection.
+        # depth_mask_token is in embed_dims space after projection.
+        self.missing_depth_embed = nn.Parameter(
+            torch.zeros(1, depth_embed_dim))
+        self.depth_mask_token = nn.Parameter(
+            torch.zeros(1, self.embed_dims))
+        trunc_normal_(self.missing_depth_embed, std=0.02)
+        trunc_normal_(self.depth_mask_token, std=0.02)
+
         # Position embeddings need to account for depth tokens too
         # Original: num_patches + 1 (for CLS token)
         # With depth: num_patches + num_depth_tokens + 1 (CLS token)
@@ -177,36 +196,44 @@ class VisionTransformerWithDepth(VisionTransformer):
         if depth_embeddings is None and self.depth_embed_path is not None:
             # Try loading depth embeddings from disk using image names
             if image_names is not None:
+                assert (B == len(image_names)), "Batch size must match number of image names."
                 depth_emb_list = []
                 num_depth_tokens_per_sample = None
-                skip_depth = False
+                missing_indices = []
                 
-                for img_name in image_names:
+                for idx, img_name in enumerate(image_names):
                     depth_embed = self.load_depth_embedding(img_name)
                     if depth_embed is None:
-                        # If not found, we need to know how many tokens to create
-                        # Try to get it from first successfully loaded embedding
-                        if num_depth_tokens_per_sample is None:
-                            # Can't create fallback without knowing num tokens - skip depth for this batch
-                            print(f"Warning: Could not load depth embedding for {img_name} and num_depth_tokens unknown. Skipping depth embeddings.")
-                            skip_depth = True
-                            break
-                        else:
-                            # Use zeros as fallback with same number of tokens as other samples
-                            depth_embed = torch.zeros(num_depth_tokens_per_sample, self.depth_embed_dim)
+                        missing_indices.append(idx)
+                        depth_emb_list.append(None)
                     else:
                         # Track the number of tokens from first successful load
                         if num_depth_tokens_per_sample is None:
                             num_depth_tokens_per_sample = depth_embed.shape[0]
                         elif depth_embed.shape[0] != num_depth_tokens_per_sample:
                             # All depth embeddings in batch should have same number of tokens
-                            raise ValueError(f"Depth embedding tokens mismatch: expected {num_depth_tokens_per_sample}, got {depth_embed.shape[0]}")
-                    depth_emb_list.append(depth_embed)
+                            raise ValueError(
+                                f"Depth embedding tokens mismatch: "
+                                f"expected {num_depth_tokens_per_sample}, "
+                                f"got {depth_embed.shape[0]}"
+                            )
+
+                        depth_emb_list.append(depth_embed)
                 
-                if skip_depth or len(depth_emb_list) == 0:
-                    # Couldn't load any depth embeddings, skip them
-                    depth_embeddings = None
-                else:
+                # Cannot load any depth embeddings
+                if num_depth_tokens_per_sample is None:
+                    if self.default_num_depth_tokens is None:
+                        print("Warning: Could not load any depth embeddings "
+                              "and default_num_depth_tokens is not set. Skipping depth embeddings.")
+                        depth_embeddings = None
+                    else:
+                        num_depth_tokens_per_sample = self.default_num_depth_tokens
+                
+                if num_depth_tokens_per_sample is not None:
+                    # Fill missing samples with learned missing-depth embeddings.
+                    for idx in missing_indices: # fill in missing depth embeddings with learned param
+                        depth_emb_list[idx] = self.missing_depth_embed.expand(
+                            num_depth_tokens_per_sample, -1)
                     # Stack them into a batch: (B, num_depth_tokens, depth_embed_dim)
                     depth_embeddings = torch.stack(depth_emb_list, dim=0).to(x.device)
             else:
@@ -220,6 +247,19 @@ class VisionTransformerWithDepth(VisionTransformer):
             # Output: (B, num_depth_tokens, embed_dim) - projected to match RGB dimension
             depth_embeddings = self.depth_proj(depth_embeddings)
             num_depth_tokens = depth_embeddings.shape[1]  # Get actual number from tensor
+            if self.training and self.depth_token_drop_rate > 0:
+                # Randomly mask depth tokens for robustness to missing depth.
+                drop_mask = torch.rand(
+                    B, num_depth_tokens, device=depth_embeddings.device) < self.depth_token_drop_rate
+                if drop_mask.any(): # Avoids unnecessary computation if no tokens are dropped in this batch.
+                    mask_token = self.depth_mask_token.expand(
+                        B, num_depth_tokens, -1) # from (1, embed_dim) to (B, num_depth_tokens, embed_dim)
+                    # drop_mask	(B, num_depth_tokens)
+                    # drop_mask.unsqueeze(-1)	(B, num_depth_tokens, 1)
+                    # mask_token	(B, num_depth_tokens, C)
+                    # depth_embeddings	(B, num_depth_tokens, C)
+                    depth_embeddings = torch.where( # Each channel in a token shares the same mask decision
+                        drop_mask.unsqueeze(-1), mask_token, depth_embeddings)
         else:
             num_depth_tokens = 0
         
@@ -237,14 +277,14 @@ class VisionTransformerWithDepth(VisionTransformer):
         
         # Stage 5: Add CLS Token (same as original)
         if self.cls_token is not None:
-            cls_token = self.cls_token.expand(B, -1, -1)
+            cls_token = self.cls_token.expand(B, -1, -1) # becomes (B, 1, embed_dim)
             # Add CLS token at the beginning
-            # Combined: (B, num_rgb_patches + num_depth_tokens + 1, embed_dim)
+            # Combined: (B, 1 + num_rgb_patches + num_depth_tokens, embed_dim)
             x = torch.cat((cls_token, x), dim=1)
         
         # Stage 6: Add Position Embeddings (need to extend for depth tokens)
-        # Original pos_embed: (1, num_patches + 1, embed_dim)
-        # Extended: (1, num_patches + num_depth_tokens + 1, embed_dim)
+        # Original pos_embed: (1, 1 + num_rgb_patches, embed_dim)
+        # Extended: (1, 1 + num_rgb_patches + num_depth_tokens, embed_dim)
         
         # Check how long the sequence is now
         current_seq_len = x.shape[1]  # Includes CLS token
@@ -256,11 +296,13 @@ class VisionTransformerWithDepth(VisionTransformer):
             
             # Could use zeros (simpler) or learn separate embeddings (better)
             # For now just pad with zeros and let the model learn during training
-            extra_pos_embed = torch.zeros(
+            extra_pos_embed = torch.zeros( # Todo: is this bug? should make these learnable params instead
                 1, num_extra_tokens, self.embed_dims,
                 device=self.pos_embed.device,
                 dtype=self.pos_embed.dtype
             )
+            # Todo: the rgb and depth have separate pose embeddings, while in reality, they are pixel-by-pixel aligned.
+            # Todo: how should we encode this prior knowledge into the position embeddings? like using the same pos embeddings for both?
             extended_pos_embed = torch.cat([self.pos_embed, extra_pos_embed], dim=1)
         else:
             extended_pos_embed = self.pos_embed
@@ -323,4 +365,3 @@ class VisionTransformerWithDepth(VisionTransformer):
             return patch_token.reshape(B, *hw, -1).permute(0, 3, 1, 2)
         if self.out_type == 'avg_featmap':
             return self.ln2(patch_token.mean(dim=1))
-
