@@ -11,8 +11,9 @@ from .heatmap_head import HeatmapHead
 from .mspn_head import MSPNHead
 from .vipnas_head import ViPNASHead
 from .pose3d_heatmap_head import Pose3dHeatmapHead
+from .nav_cmd_head import NavCmdHead
 
 __all__ = [
     'HeatmapHead', 'CPMHead', 'MSPNHead', 'ViPNASHead',
-    'AssociativeEmbeddingHead', 'CIDHead', 'Pose3dHeatmapHead'
+    'AssociativeEmbeddingHead', 'CIDHead', 'Pose3dHeatmapHead', 'NavCmdHead'
 ]

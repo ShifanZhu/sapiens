@@ -95,17 +95,20 @@ codec = dict(
 # Backbone output featmap:
 # B × 1024 × 48 × 64
 
-# Deconv 1:
+# Deconv 1: (stride=2)
 # B × 1024 × 48 × 64 → B × 768 × 96 × 128
 
-# Deconv 2:
+# Deconv 2: (stride=2)
 # B × 768 × 96 × 128 → B × 768 × 192 × 256
 
-# Conv 1×1 layers:
+# Conv 1×1 layers: (stride=1)
 # B × 768 × 192 × 256 → B × 768 × 192 × 256
 
-# Conv 1×1 layers:
+# Conv 1×1 layers: (stride=1)
 # B × 768 × 192 × 256 → B × 768 × 192 × 256
+
+# Final Conv 1×1 layer: (for keypoint heatmaps)
+# B × 768 × 192 × 256 → B × 17 × 192 × 256
 
 # Final heatmap:
 # B × 17 × 192 × 256

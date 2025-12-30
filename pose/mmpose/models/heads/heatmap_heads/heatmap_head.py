@@ -93,8 +93,8 @@ class HeatmapHead(BaseHead):
         # In config file, we defined:
         # deconv_out_channels=(768, 768),
         # deconv_kernel_sizes=(4, 4), # this will 2x at each step. so total is 4x
-        # # Deconv 1: B × 1024 × 64 × 48 → B × 768 × 128 × 96
-        # # Deconv 2: B × 768 × 128 × 96 → B × 768 × 256 × 192
+        # Deconv 1: B × 1024 × 64 × 48 → B × 768 × 128 × 96
+        # Deconv 2: B × 768 × 128 × 96 → B × 768 × 256 × 192
 
         # In paper: By default, three deconvolutional layers with batch normalization and ReLU activation are used.
         # Each layer has 768 filters with 4 × 4 kernel. The stride is 2. A 1 × 1 convolutional layer is 
@@ -123,7 +123,7 @@ class HeatmapHead(BaseHead):
         # In config file, we defined:
         # conv_out_channels=(768, 768),
         # conv_kernel_sizes=(1, 1), # 1×1 is purely mixing information across channels
-        # # B × 768 × 256 × 192 → B × 768 × 256 × 192
+        # B × 768 × 256 × 192 → B × 768 × 256 × 192
         if conv_out_channels:
             if conv_kernel_sizes is None or len(conv_out_channels) != len(
                     conv_kernel_sizes):
