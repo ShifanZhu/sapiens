@@ -28,7 +28,7 @@ class NavCmdDataset(BaseDataset):
         test_mode (bool): Whether in test mode
 
     Annotation File Formats:
-
+        
         JSON format:
         {
             "images": [
@@ -107,12 +107,27 @@ class NavCmdDataset(BaseDataset):
         images = {img['id']: img for img in data['images']}
         annotations = {ann['image_id']: ann for ann in data['annotations']}
 
+        # Build a mapping from sequence_id to reference embedding
+        # Reference embeddings are stored only in reference frame annotations
+        seq_ref_emb = {}
+        for img_id, img_info in images.items():
+            if img_info.get('is_ref_frame', False) and img_id in annotations:
+                seq_id = img_info.get('sequence_id')
+                ann = annotations[img_id]
+                if seq_id and 'ref_emb' in ann:
+                    seq_ref_emb[seq_id] = np.array(ann['ref_emb'], dtype=np.float32)
+
         data_list = []
         for img_id, img_info in images.items():
             if img_id not in annotations:
                 continue
 
             ann = annotations[img_id]
+            seq_id = img_info.get('sequence_id', None)
+
+            # Look up reference embedding for this sequence
+            # If FiLM conditioning is enabled, all frames need access to ref_emb
+            ref_emb = seq_ref_emb.get(seq_id) if seq_id else None
 
             # Build data info dict
             data_info = dict(
@@ -121,15 +136,15 @@ class NavCmdDataset(BaseDataset):
                 img_id=img_id,
 
                 # Sequence/video information (for caching)
-                sequence_id=img_info.get('sequence_id', None),
+                sequence_id=seq_id,
                 frame_idx=img_info.get('frame_idx', None),
                 is_ref_frame=img_info.get('is_ref_frame', False),
 
                 # Navigation command (ground truth)
                 nav_cmd=np.array(ann['nav_cmd'], dtype=np.float32),
 
-                # Optional: reference embedding
-                ref_emb=np.array(ann['ref_emb'], dtype=np.float32) if 'ref_emb' in ann else None,
+                # Reference embedding (looked up from reference frame)
+                ref_emb=ref_emb,
             )
 
             data_list.append(data_info)
