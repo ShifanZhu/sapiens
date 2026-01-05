@@ -50,6 +50,9 @@ class VisionTransformerWithDepth(VisionTransformer):
             can be loaded. If None, depth is skipped when missing. Defaults to None.
         depth_token_drop_rate (float): Probability of masking depth tokens during training
             for robustness. Defaults to 0.0.
+        share_pos_embed_with_rgb (bool): If True, depth tokens share position embeddings with RGB
+            patches (for pixel-aligned depth). If False, use separate learnable position embeddings.
+            Defaults to True (since depth is pixel-by-pixel aligned with RGB).
         **kwargs: Same args as VisionTransformer.
     """
     
@@ -60,6 +63,7 @@ class VisionTransformerWithDepth(VisionTransformer):
                  depth_projection_type: str = 'linear',
                  default_num_depth_tokens: Optional[int] = None,
                  depth_token_drop_rate: float = 0.0,
+                 share_pos_embed_with_rgb: bool = True,
                  **kwargs):
         # First call the parent VisionTransformer init
         super(VisionTransformerWithDepth, self).__init__(**kwargs)
@@ -70,6 +74,7 @@ class VisionTransformerWithDepth(VisionTransformer):
         self.use_depth_projection = use_depth_projection
         self.default_num_depth_tokens = default_num_depth_tokens
         self.depth_token_drop_rate = depth_token_drop_rate
+        self.share_pos_embed_with_rgb = share_pos_embed_with_rgb
         
         # Need to project depth embeddings to match RGB dimension
         # RGB embeddings are embed_dims (like 1536 for sapiens_1b)
@@ -104,10 +109,19 @@ class VisionTransformerWithDepth(VisionTransformer):
         trunc_normal_(self.missing_depth_embed, std=0.02)
         trunc_normal_(self.depth_mask_token, std=0.02)
 
-        # Position embeddings need to account for depth tokens too
-        # Original: num_patches + 1 (for CLS token)
-        # With depth: num_patches + num_depth_tokens + 1 (CLS token)
-        # We'll extend pos_embed dynamically in forward() when we need it
+        # todo 1 & 2: I fixed this. Now Position embeddings for depth tokens
+        # If share_pos_embed_with_rgb is T: depth tokens share RGB position embeddings (pixel-aligned)
+        # If share_pos_embed_with_rgb is F: use separate learnable position embeddings
+        if share_pos_embed_with_rgb:
+            # Don't create separate embeddings, we will use RGB position embeddings
+            self.depth_pos_embed = None
+        else:
+            # Create separate learnable position embeddings for depth tokens
+            # Use default_num_depth_tokens if provided, otherwise allocate a def buffer (for us, 100 tokens)
+            max_depth_tokens = default_num_depth_tokens if default_num_depth_tokens is not None else 100
+            self.depth_pos_embed = nn.Parameter(
+                torch.zeros(1, max_depth_tokens, self.embed_dims))
+            trunc_normal_(self.depth_pos_embed, std=0.02)
         
     def load_depth_embedding(self, image_name: str) -> Optional[torch.Tensor]:
         """Load depth embedding from .npy file
@@ -294,16 +308,59 @@ class VisionTransformerWithDepth(VisionTransformer):
             # Need to extend position embeddings for depth tokens
             num_extra_tokens = current_seq_len - original_seq_len
             
-            # Could use zeros (simpler) or learn separate embeddings (better)
-            # For now just pad with zeros and let the model learn during training
-            extra_pos_embed = torch.zeros( # Todo: is this bug? should make these learnable params instead
-                1, num_extra_tokens, self.embed_dims,
-                device=self.pos_embed.device,
-                dtype=self.pos_embed.dtype
-            )
-            # Todo: the rgb and depth have separate pose embeddings, while in reality, they are pixel-by-pixel aligned.
-            # Todo: how should we encode this prior knowledge into the position embeddings? like using the same pos embeddings for both?
-            extended_pos_embed = torch.cat([self.pos_embed, extra_pos_embed], dim=1)
+            if self.share_pos_embed_with_rgb:
+                # TODO 2: Fixed this. Share position embeddings with RGB (pixel-by-pixel aligned)
+                # Since depth is pixel-aligned with RGB, we use RGB position embeddings for depth tokens
+                # We sample/interpolate RGB position embeddings to match num_depth_tokens
+                
+                # Get RGB patch position embeddings (skip CLS token)
+                # pos_embed shape: (1, 1 + num_rgb_patches, embed_dim)
+                # We want: (1, num_rgb_patches, embed_dim)  just the patch positions
+                rgb_patch_pos_embed = self.pos_embed[:, self.num_extra_tokens:, :]  # Skip CLS token
+                
+                # Sample RGB position embeddings to match num_depth_tokens
+                # If num_depth_tokens == num_rgb_patches, use all of them
+                # Otherwise, evenly sample from RGB position embeddings
+                if num_depth_tokens == num_rgb_patches:
+                    # Perfect match - use all RGB position embeddings
+                    depth_pos_embed_to_use = rgb_patch_pos_embed
+                else:
+                    # Sample evenly from RGB position embeddings
+                    # Create indices to sample from RGB patches
+                    indices = torch.linspace(0, num_rgb_patches - 1, num_depth_tokens, 
+                                            device=rgb_patch_pos_embed.device).long()
+                    depth_pos_embed_to_use = rgb_patch_pos_embed[:, indices, :]
+                
+                # Concatenate: [CLS pos, RGB patch pos, depth pos (shared from RGB)]
+                extended_pos_embed = torch.cat([
+                    self.pos_embed[:, :self.num_extra_tokens, :],  # CLS token position
+                    rgb_patch_pos_embed,  # RGB patch positions
+                    depth_pos_embed_to_use  # Depth positions (shared from RGB)
+                ], dim=1)
+            else:
+                # Use separate learnable position embeddings for depth tokens
+                if self.depth_pos_embed is None:
+                    raise ValueError("depth_pos_embed is None but share_pos_embed_with_rgb=False. "
+                                   "This should not happen - check __init__.")
+                
+                # Check if we have enough depth position embeddings
+                if num_depth_tokens > self.depth_pos_embed.shape[1]:
+                    # If we need more than allocated, pad with zeros
+                    print(f"Warning: num_depth_tokens ({num_depth_tokens}) exceeds allocated depth_pos_embed size "
+                          f"({self.depth_pos_embed.shape[1]}). Padding with zeros.")
+                    extra_needed = num_depth_tokens - self.depth_pos_embed.shape[1]
+                    extra_padding = torch.zeros(
+                        1, extra_needed, self.embed_dims,
+                        device=self.depth_pos_embed.device,
+                        dtype=self.depth_pos_embed.dtype
+                    )
+                    depth_pos_embed_to_use = torch.cat([self.depth_pos_embed, extra_padding], dim=1)
+                else:
+                    # Use only the needed portion of the learnable embeddings
+                    depth_pos_embed_to_use = self.depth_pos_embed[:, :num_depth_tokens, :]
+                
+                # Concatenate: [RGB pos, depth pos (separate learnable)]
+                extended_pos_embed = torch.cat([self.pos_embed, depth_pos_embed_to_use], dim=1)
         else:
             extended_pos_embed = self.pos_embed
         
