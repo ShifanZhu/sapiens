@@ -25,6 +25,7 @@ from .coco2goliath_dataset import Coco2GoliathDataset
 from .crowdpose2goliath_dataset import Crowdpose2GoliathDataset
 from .aic2goliath_dataset import Aic2GoliathDataset
 from .mpii2goliath_dataset import Mpii2GoliathDataset
+from .ntu_rgbd_dataset import NTURGBDDataset
 
 __all__ = [
     'CocoDataset', 'MpiiDataset', 'MpiiTrbDataset', 'AicDataset',
@@ -32,5 +33,5 @@ __all__ = [
     'JhmdbDataset', 'PoseTrack18VideoDataset', 'HumanArtDataset', 'Aic2CocoDataset',
     'Mpii2CocoDataset', 'Crowdpose2CocoDataset', 'GoliathDataset', 'GoliathEvalDataset',
     'Coco2GoliathDataset', 'Crowdpose2GoliathDataset', 'Mpii2GoliathDataset', 'Aic2GoliathDataset',
-    'Goliath3dEvalDataset'
+    'Goliath3dEvalDataset', 'NTURGBDDataset'
 ]

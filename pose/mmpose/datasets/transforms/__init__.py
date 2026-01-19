@@ -13,6 +13,8 @@ from .common_transforms import (Albumentation, GenerateTarget,
 from .converting import KeypointConverter
 from .formatting import PackPoseInputs
 from .loading import LoadImage
+from .loading_rgbd import LoadRGBD
+from .concat_rgbd import ConcatRGBD
 from .pose3d_transforms import RandomFlipAroundRoot
 from .topdown_transforms import TopdownAffine
 from .pose3d_transforms import Pose3dRandomFlip, Pose3dRandomBBoxTransform, Pose3dTopdownAffine,\
@@ -22,6 +24,7 @@ __all__ = [
     'GetBBoxCenterScale', 'RandomBBoxTransform', 'RandomFlip',
     'RandomHalfBody', 'TopdownAffine', 'Albumentation',
     'PhotometricDistortion', 'PackPoseInputs', 'LoadImage',
+    'LoadRGBD', 'ConcatRGBD',
     'BottomupGetHeatmapMask', 'BottomupRandomAffine', 'BottomupResize',
     'GenerateTarget', 'KeypointConverter', 'RandomFlipAroundRoot',
     'Pose3dRandomFlip', 'Pose3dRandomBBoxTransform', 'Pose3dTopdownAffine',
