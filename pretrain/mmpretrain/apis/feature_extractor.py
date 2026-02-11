@@ -47,13 +47,20 @@ class FeatureExtractor(BaseInferencer):
     def __call__(self,
                  inputs: InputType,
                  batch_size: int = 1,
+                 depth_embeddings=None,
+                 image_names=None,
                  **kwargs) -> dict:
-        """Call the inferencer.
+        """Call the inferencer with optional depth embeddings support!
 
         Args:
             inputs (str | array | list): The image path or array, or a list of
                 images.
             batch_size (int): Batch size. Defaults to 1.
+            depth_embeddings (torch.Tensor, optional): Depth embeddings of shape
+                (B, num_depth_tokens, depth_embed_dim). If None and backbone supports
+                it, will try to load from disk using image_names.
+            image_names (list[str], optional): List of image names for loading depth
+                embeddings. Should match the inputs. Only used if depth_embeddings is None.
             **kwargs: Other keyword arguments accepted by the `extract_feat`
                 method of the model.
 
@@ -64,14 +71,37 @@ class FeatureExtractor(BaseInferencer):
         inputs = self.preprocess(ori_inputs, batch_size=batch_size)
         preds = []
         for data in inputs:
-            preds.extend(self.forward(data, **kwargs))
+            preds.extend(self.forward(
+                data, 
+                depth_embeddings=depth_embeddings,
+                image_names=image_names,
+                **kwargs
+            ))
 
         return preds
 
     @torch.no_grad()
-    def forward(self, inputs: Union[dict, tuple], **kwargs):
+    def forward(self, inputs: Union[dict, tuple], depth_embeddings=None, image_names=None, **kwargs):
+        """Forward pass with optional depth embeddings support!
+        
+        Args:
+            inputs: Preprocessed image inputs
+            depth_embeddings (torch.Tensor, optional): Depth embeddings of shape
+                (B, num_depth_tokens, depth_embed_dim). If None, will try to load
+                from disk using image_names if backbone supports it.
+            image_names (list[str], optional): List of image names for loading depth
+                embeddings. Only used if depth_embeddings is None.
+            **kwargs: Other keyword arguments passed to extract_feat.
+        """
         inputs = self.model.data_preprocessor(inputs, False)['inputs']
-        outputs = self.model.extract_feat(inputs, **kwargs)
+        # Pass depth embeddings and image names to extract_feat
+        # These get forwarded to the backbone if it supports them
+        outputs = self.model.extract_feat(
+            inputs, 
+            depth_embeddings=depth_embeddings,
+            image_names=image_names,
+            **kwargs
+        )
 
         def scatter(feats, index):
             if isinstance(feats, torch.Tensor):

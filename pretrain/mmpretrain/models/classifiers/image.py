@@ -130,8 +130,10 @@ class ImageClassifier(BaseClassifier):
         else:
             raise RuntimeError(f'Invalid mode "{mode}".')
 
-    def extract_feat(self, inputs, stage='neck'):
+    def extract_feat(self, inputs, stage='neck', depth_embeddings=None, image_names=None, **kwargs):
         """Extract features from the input tensor with shape (N, C, ...).
+        
+        Now supports depth embeddings! 
 
         Args:
             inputs (Tensor): A batch of inputs. The shape of it should be
@@ -146,6 +148,11 @@ class ImageClassifier(BaseClassifier):
                   linear layer. Usually returns a tensor.
 
                 Defaults to "neck".
+            depth_embeddings (torch.Tensor, optional): Depth embeddings of shape
+                (B, num_depth_tokens, depth_embed_dim). Passed to backbone if supported.
+            image_names (list[str], optional): List of image names for loading depth
+                embeddings. Passed to backbone if supported.
+            **kwargs: Other keyword arguments (forwarded to backbone).
 
         Returns:
             tuple | Tensor: The output of specified stage.
@@ -206,7 +213,9 @@ class ImageClassifier(BaseClassifier):
             (f'Invalid output stage "{stage}", please choose from "backbone", '
              '"neck" and "pre_logits"')
 
-        x = self.backbone(inputs)
+        # Pass depth embeddings and image names to backbone if it supports them
+        # Most backbones will ignore these kwargs, but VisionTransformerWithDepth will use them
+        x = self.backbone(inputs, depth_embeddings=depth_embeddings, image_names=image_names, **kwargs)
 
         if stage == 'backbone':
             return x
