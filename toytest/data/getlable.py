@@ -3,12 +3,13 @@ import os
 import numpy as np
 import cv2
 from utils import smplx_forward, world_coords_to_camera, human_coords_to_world, visualize_joints_with_video, load_video, project_joints_on_video, compute_intrinsic_matrix
-from utils import get_smplx_skeleton
+from utils import get_smplx_skeleton, project_joints_to_2d
+from matplotlib import pyplot as plt
 scene_names_csv = 'toytest/data/bedlam2_scene_names.csv'
 scene_names_csv = pd.read_csv(scene_names_csv)
 
-folder_name = scene_names_csv['Folder name'].tolist()[30:31]
-scene_names = scene_names_csv['Scene name'].str.strip().tolist()[30:31]
+folder_name = scene_names_csv['Folder name'].tolist()[66:]
+scene_names = scene_names_csv['Scene name'].str.strip().tolist()[66:]
 
 smplx_model_path = "/home/hang/repos_local/MMC/sapiens/smplx/smplx_lockedhead_20230207/models_lockedhead"
 
@@ -19,6 +20,7 @@ print(scene_names)
 
 gt_parent_folder = '/media/hang/8tb-data/datasets/gt'
 motion_parent_folder = '/media/hang/8tb-data/datasets/b2_motions_npz_training/motions_npz_training'
+mp4_parent_folder = '/media/hang/8tb-data/datasets/bedlam2_download'
 
 bones = get_smplx_skeleton()
 
@@ -160,7 +162,7 @@ def get_joint(start_frame, smplx_param_orig, trans_body, rotate_body, cam_x, cam
 	if return_right_handed:
 		joints_cam_coords[:, :, 1] = -joints_cam_coords[:, :, 1]
 		joints_world_coords[:, :, 1] = -joints_world_coords[:, :, 1]
-	return joints_world_coords, joints_cam_coords, joints_human_coords_right_handed
+	return joints_world_coords, joints_cam_coords
 
 
 		
@@ -169,6 +171,7 @@ def get_joint(start_frame, smplx_param_orig, trans_body, rotate_body, cam_x, cam
 
 for i in range(len(folder_name)):
 	print(f"Processing folder: {folder_name[i]}, scene: {scene_names[i]}")
+	mp4_folder = f'{mp4_parent_folder}/{folder_name[i]}_mp4/{folder_name[i]}/mp4'
 	gt_folder = f"{gt_parent_folder}/{folder_name[i]}_gt_centersubframe_exr_meta_csv/{folder_name[i]}"
 	be_seq = f'{gt_folder}/be_seq.csv'
 	be_seq = pd.read_csv(be_seq).to_dict('list')
@@ -186,6 +189,7 @@ for i in range(len(folder_name)):
 	for idx, comment in enumerate(be_seq['Comment']):
 		if 'sequence_name' in comment:
 			#Get sequence name and corresponding camera details
+			body_id = 0
 			seq_name = comment.split(';')[0].split('=')[-1]
 			cam_csv_data = pd.read_csv(os.path.join(cam_csv_base, seq_name+'_camera.csv'))
 			cam_csv_data = cam_csv_data.to_dict('list')
@@ -226,7 +230,7 @@ for i in range(len(folder_name)):
 			
 	
 
-			joints_world, joints_cam, joints_human_coords_right_handed = get_joint(start_frame, smplx_param_orig, trans_body, rotate_body, cam_x, cam_y, cam_z,
+			joints_world, joints_cam = get_joint(start_frame, smplx_param_orig, trans_body, rotate_body, cam_x, cam_y, cam_z,
                cam_pitch_=cam_pitch_, cam_roll_=cam_roll_, cam_yaw_=cam_yaw_,
                smplx_model_path=smplx_model_path, return_right_handed=True)
 
@@ -242,18 +246,30 @@ for i in range(len(folder_name)):
 			# 	marker_x=X,
 			# 	marker_y=Y
 			# )
-			video_frames = load_video(f'/media/hang/8tb-data/datasets/bedlam2_download/{folder_name[i]}_mp4/{folder_name[i]}/mp4/{seq_name}.mp4', max_frames=len(cam_x)//5, rotate_flag=rotate_flag)
-			intrinsic_matrix = compute_intrinsic_matrix(focal_length=fl[0], sensor_width=SENSOR_W, sensor_height=SENSOR_H, img_width=IMG_W, img_height=IMG_H, rotate_flag=rotate_flag)
-			video_frames_with_joints = project_joints_on_video(video_frames, joints_cam, intrinsic_matrix, fps=6.0, bones=bones, joint_radius=2, bone_thickness=1, rotate_flag=rotate_flag,)
-			print(np.max(video_frames_with_joints-video_frames))
+			mp4_path = f'{mp4_folder}/{seq_name}.mp4'
+			video_frames = load_video(mp4_path, max_frames=len(cam_x)//5, rotate_flag=rotate_flag)
+			intrinsic_matrix = compute_intrinsic_matrix(focal_length=fl[0], sensor_width=SENSOR_W, sensor_height=SENSOR_H, img_width=IMG_W, img_height=IMG_H)
+			video_frames_with_joints = project_joints_on_video(video_frames, joints_cam, intrinsic_matrix, fps=6.0, bones=bones, joint_radius=3, bone_thickness=1)
+			joints_2d_coords, joints_2d_mask = project_joints_to_2d(joints_cam, intrinsic_matrix) # [n_frames, n_joints, 2], [n_frames, n_joints], x is right, y is down
+
 			visualize_joints_with_video(
 					joints_world,
 					joints_cam,
 					video_frames=video_frames_with_joints,
 					fps=6.0,
-     				view_elev=10.0,
-					view_azim=170.0,
+     				view_elev=0.0,
+					view_azim=180.0,
 					bones=bones,
 				)
 
+			label ={
+				'joints_world': joints_world,  # [n_frames, n_joints, 3]
+				'joints_cam': joints_cam,      # [n_frames, n_joints, 3]
+				'joints_2d': joints_2d_coords, # [n_frames, n_joints, 2]
+				'joints_2d_mask': joints_2d_mask, # [n_frames, n_joints]
+				'intrinsic_matrix': intrinsic_matrix, # [3, 3]
+				'camera_position': np.stack([cam_x, cam_y, cam_z], axis=1), # [n_frames, 3]
+				'camera_rotation': np.stack([cam_pitch_, cam_roll_, cam_yaw_], axis=1), # [n_frames, 3]
+			}
 
+			np.savez(f'{seq_name}.npz', **label)

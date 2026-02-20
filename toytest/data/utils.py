@@ -78,7 +78,7 @@ def smplx_forward(models_path, gender, pose, beta, trans):
     
     if betas.ndim == 1:
         betas = np.repeat(betas[None, :], transl.shape[0], axis=0)
-    print(betas.shape, global_orient.shape, body_pose.shape, left_hand_pose.shape, right_hand_pose.shape, jaw_pose.shape, leye_pose.shape, reye_pose.shape, transl.shape)
+    
     output = model(
                 betas=betas,
                 global_orient=global_orient,
@@ -165,14 +165,13 @@ def rotate_matrix(yaw, pitch, roll):
     return roll_rotation @ pitch_rotation @ yaw_rotation
 
 
-import numpy as np
-import cv2
+
 
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
-import cv2
+
 
 
 def visualize_joints_with_video(
@@ -347,6 +346,58 @@ def visualize_joints_with_video(
     else:
         plt.show()
 
+def project_joints_to_2d(
+    joints_cam: np.ndarray,
+    intrinsic_matrix: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Project 3D camera-space joints to 2D image coordinates.
+    
+    Args:
+        joints_cam: [n_frames, n_joints, 3] or [n_joints, 3] 
+                   in (x=forward, y=left, z=up) coordinates
+        intrinsic_matrix: [3, 3] camera intrinsic matrix
+    
+    Returns:
+        joints_2d: [n_frames, n_joints, 2] or [n_joints, 2] - 2D pixel coordinates - x is right, y is down
+        valid_mask: [n_frames, n_joints] or [n_joints] - True if joint is in front of camera
+    """
+    single_frame = False
+    if joints_cam.ndim == 2:
+        joints_cam = joints_cam[np.newaxis, ...]  # [1, n_joints, 3]
+        single_frame = True
+    
+    n_frames, n_joints, _ = joints_cam.shape
+    joints_2d_all = np.zeros((n_frames, n_joints, 2), dtype=np.float32)
+    valid_mask_all = np.zeros((n_frames, n_joints), dtype=bool)
+    
+    for f in range(n_frames):
+        joints_3d = joints_cam[f]  # [n_joints, 3]
+        
+        # Convert to OpenCV coordinates: (x=forward, y=left, z=up) -> (x=right, y=down, z=forward)
+        joints_cv = np.zeros_like(joints_3d)
+        joints_cv[:, 0] = -joints_3d[:, 1]  # x_right = -y_left
+        joints_cv[:, 1] = -joints_3d[:, 2]  # y_down = -z_up
+        joints_cv[:, 2] = joints_3d[:, 0]   # z_fwd = x_forward
+        
+        # Check which joints are in front of camera
+        valid_mask = joints_cv[:, 2] > 0
+        
+        # Project 3D to 2D: [u, v, 1]^T = K @ [x, y, z]^T
+        joints_homo = joints_cv.T  # [3, n_joints]
+        proj_homo = intrinsic_matrix @ joints_homo  # [3, n_joints]
+        
+        # Normalize by depth
+        joints_2d = proj_homo[:2] / (proj_homo[2] + 1e-8)  # [2, n_joints]
+        joints_2d = joints_2d.T  # [n_joints, 2]
+        
+        joints_2d_all[f] = joints_2d
+        valid_mask_all[f] = valid_mask
+    
+    if single_frame:
+        return joints_2d_all[0], valid_mask_all[0]
+    
+    return joints_2d_all, valid_mask_all
 
 def project_joints_on_video(
     video_frames: np.ndarray,
@@ -360,12 +411,28 @@ def project_joints_on_video(
     stride: int = 1,
     save_path: str | None = None,
     fps: int = 25,
-    rotate_flag: bool = False,
+    return_2d_coords: bool = False,
 ):
     """
     Project 3D joints onto 2D video frames.
     
-    Converts from (x=forward, y=left, z=up) to OpenCV (x=right, y=down, z=forward).
+    Args:
+        video_frames: [n_frames, H, W, 3] - RGB video frames
+        joints_cam: [n_frames, n_joints, 3] - 3D joints in camera coords
+        intrinsic_matrix: [3, 3] - camera intrinsic matrix
+        bones: list of (i, j) joint pairs for skeleton
+        joint_color: (B, G, R) color for joints
+        bone_color: (B, G, R) color for bones
+        joint_radius: radius of joint circles
+        bone_thickness: thickness of bone lines
+        stride: subsample frames
+        save_path: output video path
+        fps: frames per second
+        return_2d_coords: if True, also return 2D coordinates and valid mask
+    
+    Returns:
+        projected_frames: video with joints drawn
+        If return_2d_coords=True: (projected_frames, joints_2d, valid_mask)
     """
     data_video = video_frames[::stride].copy()
     data_joints = joints_cam[::stride]
@@ -374,48 +441,20 @@ def project_joints_on_video(
     if data_video.shape[0] != data_joints.shape[0]:
         raise ValueError("video_frames and joints_cam must have same number of frames")
 
+    # Use project_joints_to_2d to get all 2D coordinates
+    joints_2d_all, valid_mask_all = project_joints_to_2d(data_joints, intrinsic_matrix)
+
     projected_frames = []
 
     for f in range(n_frames):
         frame = data_video[f].copy()
-        joints_3d = data_joints[f]  # [n_joints, 3] in (x=forward, y=left, z=up)
+        joints_2d = joints_2d_all[f].astype(int)  # [n_joints, 2]
+        valid_mask = valid_mask_all[f]  # [n_joints]
 
-        if not rotate_flag:
-            # Convert to OpenCV coordinates: (x=right, y=down, z=forward)
-            # x_fwd, y_left, z_up -> x_right=-y_left, y_down=-z_up, z_fwd=x_fwd
-            joints_cv = np.zeros_like(joints_3d)
-            joints_cv[:, 0] = -joints_3d[:, 1]  # x_right = -y_left
-            joints_cv[:, 1] = -joints_3d[:, 2]  # y_down = -z_up
-            joints_cv[:, 2] = joints_3d[:, 0]   # z_fwd = x_forward
-        
-        elif rotate_flag:
-            # Rotate joints 90 degrees clockwise around z-axis (up)
-            # This is equivalent to swapping x and y, and negating the new y
-            # joints_cv = np.zeros_like(joints_3d)
-            # joints_cv[:, 0] = joints_3d[:, 2]  # x_right = z_up
-            # joints_cv[:, 1] = -joints_3d[:, 1]  # y_down = y_up
-            # joints_cv[:, 2] = joints_3d[:, 0] 
-            
-            joints_cv = np.zeros_like(joints_3d)
-            joints_cv[:, 0] = -joints_3d[:, 1]  # x_right = -y_left
-            joints_cv[:, 1] = -joints_3d[:, 2]  # y_down = -z_up
-            joints_cv[:, 2] = joints_3d[:, 0]   # z_fwd = x_forward
-
-        # Filter out joints behind camera (z <= 0)
-        valid_mask = joints_cv[:, 2] > 0
-        
         if not valid_mask.any():
             print(f"Warning: Frame {f} - all joints behind camera")
             projected_frames.append(frame)
             continue
-
-        # Project 3D points to 2D
-        joints_homo = joints_cv.T  # [3, n_joints]
-        proj_homo = intrinsic_matrix @ joints_homo  # [3, n_joints]
-        
-        # Convert from homogeneous to 2D coordinates
-        joints_2d = proj_homo[:2] / proj_homo[2]  # [2, n_joints]
-        joints_2d = joints_2d.T.astype(int)  # [n_joints, 2]
 
         h, w = frame.shape[:2]
 
@@ -438,7 +477,6 @@ def project_joints_on_video(
 
         if f == 0:
             print(f"Frame 0 - Valid joints: {valid_mask.sum()}/{len(valid_mask)}")
-            print(f"Joint z-range (CV): [{joints_cv[:, 2].min():.3f}, {joints_cv[:, 2].max():.3f}]")
             print(f"2D proj range - x: [{joints_2d[:, 0].min()}, {joints_2d[:, 0].max()}], y: [{joints_2d[:, 1].min()}, {joints_2d[:, 1].max()}]")
 
         projected_frames.append(frame)
@@ -457,6 +495,9 @@ def project_joints_on_video(
         out.release()
         print(f"Saved: {save_path}")
 
+    if return_2d_coords:
+        return projected_frames, joints_2d_all, valid_mask_all
+    
     return projected_frames
 
 def compute_intrinsic_matrix(
@@ -465,7 +506,6 @@ def compute_intrinsic_matrix(
     sensor_height: float,
     img_width: int,
     img_height: int,
-    rotate_flag: bool = False,
 ) -> np.ndarray:
     """
     Compute camera intrinsic matrix from focal length and sensor dimensions.
@@ -571,7 +611,6 @@ def get_smplx_skeleton():
     kinematic_skeleton = body + jaw_eyes + left_hand + right_hand
     
     return kinematic_skeleton
-
 
 def get_smplx_skeleton_simple():
     """
