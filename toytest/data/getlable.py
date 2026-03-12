@@ -3,13 +3,13 @@ import os
 import numpy as np
 import cv2
 from utils import smplx_forward, world_coords_to_camera, human_coords_to_world, visualize_joints_with_video, load_video, project_joints_on_video, compute_intrinsic_matrix
-from utils import get_smplx_skeleton, project_joints_to_2d
+from utils import get_smplx_skeleton, project_joints_to_2d, cam_to_right_handed, get_smplx_model, project_mesh_on_video
 from matplotlib import pyplot as plt
 scene_names_csv = 'toytest/data/bedlam2_scene_names.csv'
 scene_names_csv = pd.read_csv(scene_names_csv)
 
-folder_name = scene_names_csv['Folder name'].tolist()[66:]
-scene_names = scene_names_csv['Scene name'].str.strip().tolist()[66:]
+folder_name = scene_names_csv['Folder name'].tolist()
+scene_names = scene_names_csv['Scene name'].str.strip().tolist()
 
 smplx_model_path = "/home/hang/repos_local/MMC/sapiens/smplx/smplx_lockedhead_20230207/models_lockedhead"
 
@@ -137,7 +137,8 @@ def get_joint(start_frame, smplx_param_orig, trans_body, rotate_body, cam_x, cam
                cam_yaw_=0., cam_pitch_=0., cam_roll_=0., smplx_model_path=None, return_right_handed=True):
       
 	# Saving every 5th frame to match 6fps video frames
-	total_frames = len(cam_x) // 5
+	total_frames = np.ceil(len(cam_x) / 5)
+	total_frames = int(total_frames)
 	smplx_ind = [start_frame + i * 5 for i in range(total_frames)]
 	cam_ind = [i * 5 for i in range(total_frames)]
 	cam_x = np.array(cam_x)[cam_ind]
@@ -153,123 +154,167 @@ def get_joint(start_frame, smplx_param_orig, trans_body, rotate_body, cam_x, cam
 	
 	
  
-	vertices, joints_human_coords_right_handed = smplx_forward(smplx_model_path, gender, pose, beta, transl)
+	vertices_right_handed, joints_human_coords_right_handed = smplx_forward(smplx_model_path, gender, pose, beta, transl)
 	joints_human_coords = joints_human_coords_right_handed.copy()
 	joints_human_coords[:, :, 1] = joints_human_coords_right_handed[:, :, 2]
 	joints_human_coords[:, :, 2] = joints_human_coords_right_handed[:, :, 1]
+	vertices = vertices_right_handed.copy()
+	vertices[:, :, 1] = vertices_right_handed[:, :, 2]
+	vertices[:, :, 2] = vertices_right_handed[:, :, 1]
 	joints_world_coords = human_coords_to_world(joints_human_coords, trans_body[0], trans_body[1], trans_body[2], rotate_body[0], rotate_body[1], rotate_body[2])	
 	joints_cam_coords = world_coords_to_camera(joints_world_coords, cam_x, cam_y, cam_z, cam_yaw_, cam_pitch_, cam_roll_)
+	vertices_world_coords = human_coords_to_world(vertices, trans_body[0], trans_body[1], trans_body[2], rotate_body[0], rotate_body[1], rotate_body[2])
+	vertices_cam_coords = world_coords_to_camera(vertices_world_coords, cam_x, cam_y, cam_z, cam_yaw_, cam_pitch_, cam_roll_)
 	if return_right_handed:
 		joints_cam_coords[:, :, 1] = -joints_cam_coords[:, :, 1]
 		joints_world_coords[:, :, 1] = -joints_world_coords[:, :, 1]
-	return joints_world_coords, joints_cam_coords
+		vertices_cam_coords[:, :, 1] = -vertices_cam_coords[:, :, 1]
+		vertices_world_coords[:, :, 1] = -vertices_world_coords[:, :, 1]
+	return joints_world_coords, joints_cam_coords, vertices_world_coords, vertices_cam_coords
 
 
 		
+if __name__ == '__main__':
 
+	joints_2d_coords_list, joints_2d_mask_list, joints_cam_list, joints_world_list = [], [], [], []
 
-
-for i in range(len(folder_name)):
-	print(f"Processing folder: {folder_name[i]}, scene: {scene_names[i]}")
-	mp4_folder = f'{mp4_parent_folder}/{folder_name[i]}_mp4/{folder_name[i]}/mp4'
-	gt_folder = f"{gt_parent_folder}/{folder_name[i]}_gt_centersubframe_exr_meta_csv/{folder_name[i]}"
-	be_seq = f'{gt_folder}/be_seq.csv'
-	be_seq = pd.read_csv(be_seq).to_dict('list')
-	cam_csv_base = os.path.join(gt_folder,'ground_truth/meta_exr_csv')
-     
-	if 'portrait' in scene_names[i]:
-		rotate_flag = True
-	else:
-		rotate_flag = False
-	SENSOR_W = 36
-	SENSOR_H = 20.25
-	IMG_W = 1280
-	IMG_H = 720
-
-	for idx, comment in enumerate(be_seq['Comment']):
-		if 'sequence_name' in comment:
-			#Get sequence name and corresponding camera details
-			body_id = 0
-			seq_name = comment.split(';')[0].split('=')[-1]
-			cam_csv_data = pd.read_csv(os.path.join(cam_csv_base, seq_name+'_camera.csv'))
-			cam_csv_data = cam_csv_data.to_dict('list')
-			cam_x = np.array(cam_csv_data['x']) * 0.01  # Convert from cm to m
-			cam_y = np.array(cam_csv_data['y']) * 0.01  # Convert from cm to m
-			cam_z = np.array(cam_csv_data['z']) * 0.01  # Convert from cm to m
-			cam_yaw_ = cam_csv_data['yaw']
-			cam_pitch_ = cam_csv_data['pitch']
-			cam_roll_ = cam_csv_data['roll']
-			fl = cam_csv_data['focal_length']
-			sw = cam_csv_data['sensor_width']
-			sh = cam_csv_data['sensor_height']
-			continue
-		elif 'start_frame' in comment:
-			# Get body details
-			start_frame = int(comment.split(';')[0].split('=')[-1])
-			body = be_seq['Body'][idx]
-
-			if 'moyo' in scene_names[i]:
-				smplx_param_orig_path = os.path.join(motion_parent_folder, body+'.npz')
-			else:
-				parts = body.rsplit('_', 1)
-				smplx_param_orig_path = os.path.join(motion_parent_folder, parts[0]+'_'+parts[1]+'.npz')
-			if not os.path.exists(smplx_param_orig_path):
-				print(f'{body} is a test subject. Skipping')
+	for i in range(len(folder_name)):
+		print(f"Processing folder: {folder_name[i]}, scene: {scene_names[i]}")
+		mp4_folder = f'{mp4_parent_folder}/{folder_name[i]}_mp4/{folder_name[i]}/mp4'
+		gt_folder = f"{gt_parent_folder}/{folder_name[i]}_gt_centersubframe_exr_meta_csv/{folder_name[i]}"
+		be_seq = f'{gt_folder}/be_seq.csv'
+		be_seq = pd.read_csv(be_seq).to_dict('list')
+		cam_csv_base = os.path.join(gt_folder,'ground_truth/meta_exr_csv')
+		
+		if 'portrait' in scene_names[i]:
+			rotate_flag = True
+		else:
+			rotate_flag = False
+		SENSOR_W = 36
+		SENSOR_H = 20.25
+		IMG_W = 1280
+		IMG_H = 720
+		
+		for idx, comment in enumerate(be_seq['Comment']):
+			if 'sequence_name' in comment:
+				#Get sequence name and corresponding camera details
+				n_body = 0
+				joints_2d_coords_list, joints_2d_mask_list, joints_cam_list, joints_world_list = [], [], [], []
+				gender_list, beta_list = [], []
+				vertices_world_list, vertices_cam_list = [], []
+				seq_name = comment.split(';')[0].split('=')[-1]
+				cam_csv_data = pd.read_csv(os.path.join(cam_csv_base, seq_name+'_camera.csv'))
+				cam_csv_data = cam_csv_data.to_dict('list')
+				cam_x = np.array(cam_csv_data['x']) * 0.01  # Convert from cm to m
+				cam_y = np.array(cam_csv_data['y']) * 0.01  # Convert from cm to m
+				cam_z = np.array(cam_csv_data['z']) * 0.01  # Convert from cm to m
+				cam_yaw_ = cam_csv_data['yaw']
+				cam_pitch_ = cam_csv_data['pitch']
+				cam_roll_ = cam_csv_data['roll']
+				cam_x_r, cam_y_r, cam_z_r, cam_yaw_r, cam_pitch_r, cam_roll_r = cam_to_right_handed(cam_x, cam_y, cam_z, cam_yaw_, cam_pitch_, cam_roll_)
+				fl = cam_csv_data['focal_length']
+				sw = cam_csv_data['sensor_width']
+				sh = cam_csv_data['sensor_height']
+				intrinsic_matrix = compute_intrinsic_matrix(focal_length=fl[0], sensor_width=SENSOR_W, sensor_height=SENSOR_H, img_width=IMG_W, img_height=IMG_H)
 				continue
-			smplx_param_orig = np.load(smplx_param_orig_path)
-			gender = smplx_param_orig['gender'].item()
-			X = be_seq['X'][idx] * 0.01  # Convert from cm to m
-			Y = be_seq['Y'][idx] * 0.01  # Convert from cm to m
-			Z = be_seq['Z'][idx] * 0.01  # Convert from cm to m
-			trans_body = np.array([X, Y, Z])
-			yaw_body_ = be_seq['Yaw'][idx]
-			pitch_body_ = be_seq['Pitch'][idx]
-			roll_body_ = be_seq['Roll'][idx]
-			rotate_body = np.array([yaw_body_, pitch_body_, roll_body_])
-			#print(cam_z)
+
+			elif 'start_frame' in comment:
+				# Get body details
+				start_frame = int(comment.split(';')[0].split('=')[-1])
+				body = be_seq['Body'][idx]
+				n_body += 1
+				if 'moyo' in scene_names[i]:
+					smplx_param_orig_path = os.path.join(motion_parent_folder, body+'.npz')
+				else:
+					parts = body.rsplit('_', 1)
+					smplx_param_orig_path = os.path.join(motion_parent_folder, parts[0]+'_'+parts[1]+'.npz')
+				if not os.path.exists(smplx_param_orig_path):
+					print(f'{body} is a test subject. Skipping')
+					continue
+				smplx_param_orig = np.load(smplx_param_orig_path)
+				gender = smplx_param_orig['gender'].item()
+				gender_list.append(gender)
+				X = be_seq['X'][idx] * 0.01  # Convert from cm to m
+				Y = be_seq['Y'][idx] * 0.01  # Convert from cm to m
+				Z = be_seq['Z'][idx] * 0.01  # Convert from cm to m
+				trans_body = np.array([X, Y, Z])
+				yaw_body_ = be_seq['Yaw'][idx]
+				pitch_body_ = be_seq['Pitch'][idx]
+				roll_body_ = be_seq['Roll'][idx]
+				rotate_body = np.array([yaw_body_, pitch_body_, roll_body_])
+				#print(cam_z)
+		
+
+				joints_world, joints_cam, vertices_world, vertices_cam = get_joint(start_frame, smplx_param_orig, trans_body, rotate_body, cam_x, cam_y, cam_z,
+				cam_pitch_=cam_pitch_, cam_roll_=cam_roll_, cam_yaw_=cam_yaw_,
+				smplx_model_path=smplx_model_path, return_right_handed=True)
 			
-	
+				# while True:
+				# 	visualize_camera(
+				# 	cam_x,
+				# 	np.array(cam_y),
+				# 	cam_z,
+				# 	cam_pitch_,
+				# 	cam_roll_,
+				# 	cam_yaw_,
+				# 	title=seq_name,	
+				# 	marker_x=X,
+				# 	marker_y=Y
+				# )
+				# mp4_path = f'{mp4_folder}/{seq_name}.mp4'
+				# video_frames = load_video(mp4_path, max_frames=len(cam_x)//5, rotate_flag=rotate_flag)
+				# faces = get_smplx_model(smplx_model_path, gender=gender).faces
+				# video_frames_with_joints = project_joints_on_video(video_frames, joints_cam, intrinsic_matrix, fps=6.0, bones=bones, joint_radius=3, bone_thickness=1)
+				# video_frames_with_vertices = project_mesh_on_video(video_frames, vertices_cam, faces, intrinsic_matrix, fps=6.0)
+				joints_2d_coords, joints_2d_mask = project_joints_to_2d(joints_cam, intrinsic_matrix) # [n_frames, n_joints, 2], [n_frames, n_joints], x is right, y is down
 
-			joints_world, joints_cam = get_joint(start_frame, smplx_param_orig, trans_body, rotate_body, cam_x, cam_y, cam_z,
-               cam_pitch_=cam_pitch_, cam_roll_=cam_roll_, cam_yaw_=cam_yaw_,
-               smplx_model_path=smplx_model_path, return_right_handed=True)
+				joints_world_list.append(joints_world)
+				joints_cam_list.append(joints_cam)
+				joints_2d_coords_list.append(joints_2d_coords)	
+				joints_2d_mask_list.append(joints_2d_mask)
+				vertices_world_list.append(vertices_world)
+				vertices_cam_list.append(vertices_cam)
+				beta_list.append(smplx_param_orig['betas'][:16])
+				
 
-			# while True:
-			# 	visualize_camera(
-			# 	cam_x,
-			# 	np.array(cam_y),
-			# 	cam_z,
-			# 	cam_pitch_,
-			# 	cam_roll_,
-			# 	cam_yaw_,
-			# 	title=seq_name,	
-			# 	marker_x=X,
-			# 	marker_y=Y
-			# )
-			mp4_path = f'{mp4_folder}/{seq_name}.mp4'
-			video_frames = load_video(mp4_path, max_frames=len(cam_x)//5, rotate_flag=rotate_flag)
-			intrinsic_matrix = compute_intrinsic_matrix(focal_length=fl[0], sensor_width=SENSOR_W, sensor_height=SENSOR_H, img_width=IMG_W, img_height=IMG_H)
-			video_frames_with_joints = project_joints_on_video(video_frames, joints_cam, intrinsic_matrix, fps=6.0, bones=bones, joint_radius=3, bone_thickness=1)
-			joints_2d_coords, joints_2d_mask = project_joints_to_2d(joints_cam, intrinsic_matrix) # [n_frames, n_joints, 2], [n_frames, n_joints], x is right, y is down
+    
+				# visualize_joints_with_video(
+				# 	world_joint_frame=joints_world,
+				# 	cam_joint_frame=joints_cam,
+				# 	video_frames_1=video_frames_with_joints,
+				# 	video_frames_2=video_frames_with_vertices,   # or None to reuse video1
+				# 	bones=bones,
+				# 	world_vertices_frame=vertices_world,
+				# 	cam_vertices_frame=vertices_cam,
+				# 	mesh_faces=faces,     # optional; if None -> vertex scatter
+				# 	fps=6,
+				# 	save_path=f'demo2.mp4',
+				# )
+				
+    
+			if (idx == len(be_seq['Comment']) - 1 or 'sequence_name' in be_seq['Comment'][idx+1]) and len(joints_world_list) > 0:
+				label ={
+					'folder_name': folder_name[i],
+					'scene_name': scene_names[i],
+					'seq_name': seq_name,
+					'joints_world': np.stack(joints_world_list, axis=0),  # [n_body, n_frames, n_joints, 3]
+					'joints_cam': np.stack(joints_cam_list, axis=0),      # [n_body, n_frames, n_joints, 3]
+					'joints_2d': np.stack(joints_2d_coords_list, axis=0), # [n_body, n_frames, n_joints, 2]
+					'joints_2d_mask': np.stack(joints_2d_mask_list, axis=0), # [n_body, n_frames, n_joints]
+					'intrinsic_matrix': intrinsic_matrix, # [3, 3]
+					'camera_position': np.stack([cam_x, cam_y, cam_z], axis=1), # [n_frames, 3]
+					'camera_rotation': np.stack([cam_pitch_, cam_roll_, cam_yaw_], axis=1), # [n_frames, 3]
+					'rotate_flag': rotate_flag,
+					'n_body': n_body,
+					'n_frames': joints_cam.shape[0],
+					'n_joints': joints_cam.shape[1],
+					'betas': np.stack(beta_list, axis=0), # [n_body, 16]
+					'gender': np.stack(gender_list, axis=0), # [n_body]
+	#				'vertices_world': np.stack(vertices_world_list, axis=0), # [n_body, n_frames, n_vertices, 3]
+	#				'vertices_cam': np.stack(vertices_cam_list, axis=0), # [n_body, n_frames, n_vertices, 3]
+				}
+				os.makedirs(f'label/{folder_name[i]}', exist_ok=True)
+				np.savez(f'label/{folder_name[i]}/{seq_name}.npz', **label)
+				print(f"Finished processing {folder_name[i]}/{seq_name} with body {body}. joints_cam.shape[0]: {joints_cam.shape[0]}")
 
-			visualize_joints_with_video(
-					joints_world,
-					joints_cam,
-					video_frames=video_frames_with_joints,
-					fps=6.0,
-     				view_elev=0.0,
-					view_azim=180.0,
-					bones=bones,
-				)
-
-			label ={
-				'joints_world': joints_world,  # [n_frames, n_joints, 3]
-				'joints_cam': joints_cam,      # [n_frames, n_joints, 3]
-				'joints_2d': joints_2d_coords, # [n_frames, n_joints, 2]
-				'joints_2d_mask': joints_2d_mask, # [n_frames, n_joints]
-				'intrinsic_matrix': intrinsic_matrix, # [3, 3]
-				'camera_position': np.stack([cam_x, cam_y, cam_z], axis=1), # [n_frames, 3]
-				'camera_rotation': np.stack([cam_pitch_, cam_roll_, cam_yaw_], axis=1), # [n_frames, 3]
-			}
-
-			np.savez(f'{seq_name}.npz', **label)
+		

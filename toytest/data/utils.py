@@ -164,6 +164,10 @@ def rotate_matrix(yaw, pitch, roll):
     
     return roll_rotation @ pitch_rotation @ yaw_rotation
 
+import torch
+import smplx
+import trimesh
+
 
 
 
@@ -177,161 +181,189 @@ from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
 def visualize_joints_with_video(
     world_joint_frame: np.ndarray,
     cam_joint_frame: np.ndarray,
-    video_frames: np.ndarray,
+    video_frames_1: np.ndarray,
+    video_frames_2: np.ndarray | None = None,
     bones: list[tuple[int, int]] | None = None,
     stride: int = 1,
     save_path: str | None = None,
     fps: int = 25,
-    view_elev: float = 10.0,
-    view_azim: float = -90.0,
+    view_elev: float = 0.0,
+    view_azim: float = -180.0,
     axis_range: float = 2.0,
+    world_vertices_frame: np.ndarray | None = None,  # [n_frames, n_verts, 3]
+    cam_vertices_frame: np.ndarray | None = None,    # [n_frames, n_verts, 3]
+    mesh_faces: np.ndarray | None = None,            # [n_faces, 3]
+    mesh_alpha: float = 0.15,
+    vertex_size: float = 1.0,
 ):
     """
-    Visualize 3D joints (world & camera) with RGB video, centered at origin (0, 0, 0).
-    Includes a ground plane at z=0.
-
-    Args:
-        world_joint_frame: [n_frames, n_joints, 3] - world coordinates
-        cam_joint_frame: [n_frames, n_joints, 3] - camera coordinates
-        video_frames: [n_frames, H, W, 3] - RGB video frames (uint8)
-        bones: list of (i, j) joint pairs to draw skeleton
-        stride: show every `stride`-th frame
-        save_path: output video path (.mp4 or .gif), None to display
-        fps: frames per second
-        view_elev: matplotlib 3D view elevation angle
-        view_azim: matplotlib 3D view azimuth angle
-        axis_range: distance from origin in each direction
+    2x3 layout:
+      Row 1: video1 | joints_world | joints_cam
+      Row 2: video2 | vertices_world | vertices_cam
     """
+    if stride <= 0:
+        raise ValueError("stride must be > 0")
     if world_joint_frame.shape != cam_joint_frame.shape:
         raise ValueError("world_joint_frame and cam_joint_frame must have same shape")
-    if world_joint_frame.shape[0] != video_frames.shape[0]:
-        raise ValueError("Joint frames and video frames must have same count")
+    if world_joint_frame.shape[0] != video_frames_1.shape[0]:
+        raise ValueError("video_frames_1 and joints must have same frame count")
+
+    if video_frames_2 is None:
+        video_frames_2 = video_frames_1
+
+    if video_frames_2.shape[0] != world_joint_frame.shape[0]:
+        raise ValueError("video_frames_2 and joints must have same frame count")
 
     data_world = world_joint_frame[::stride]
     data_cam = cam_joint_frame[::stride]
-    video = video_frames[::stride]
-    n_frames, n_joints, _ = data_world.shape
+    video1 = video_frames_1[::stride]
+    video2 = video_frames_2[::stride]
+    n_frames = data_world.shape[0]
 
-    fig = plt.figure(figsize=(16, 5))
-    
-    # Left: video frame
-    ax_img = fig.add_subplot(131)
-    ax_img.axis("off")
-    im_display = ax_img.imshow(video[0])
-    ax_img.set_title("RGB Video")
-    
-    # Middle: 3D joints in world coords, centered at origin
-    ax_world = fig.add_subplot(132, projection="3d")
-    ax_world.set_xlabel("X")
-    ax_world.set_ylabel("Y")
-    ax_world.set_zlabel("Z")
-    ax_world.set_xlim(-axis_range, axis_range)
-    ax_world.set_ylim(-axis_range, axis_range)
-    ax_world.set_zlim(-axis_range, axis_range)
-    ax_world.set_box_aspect((1, 1, 1))
-    ax_world.view_init(elev=view_elev, azim=view_azim)
-    ax_world.set_title("World Joints")
+    if world_vertices_frame is not None:
+        world_vertices_frame = world_vertices_frame[::stride]
+        if world_vertices_frame.shape[0] != n_frames:
+            raise ValueError("world_vertices_frame frame count mismatch")
+    if cam_vertices_frame is not None:
+        cam_vertices_frame = cam_vertices_frame[::stride]
+        if cam_vertices_frame.shape[0] != n_frames:
+            raise ValueError("cam_vertices_frame frame count mismatch")
 
-    # Right: 3D joints in camera coords, centered at origin
-    ax_cam = fig.add_subplot(133, projection="3d")
-    ax_cam.set_xlabel("X")
-    ax_cam.set_ylabel("Y")
-    ax_cam.set_zlabel("Z")
-    ax_cam.set_xlim(-axis_range, axis_range)
-    ax_cam.set_ylim(-axis_range, axis_range)
-    ax_cam.set_zlim(-axis_range, axis_range)
-    ax_cam.set_box_aspect((1, 1, 1))
-    ax_cam.view_init(elev=view_elev, azim=view_azim)
-    ax_cam.set_title("Camera Joints")
+    if (world_vertices_frame is not None or cam_vertices_frame is not None) and mesh_faces is None:
+        # Allowed: fallback to scatter rendering
+        pass
 
-    # Draw ground plane at z=0
-    xx, yy = np.meshgrid(np.linspace(-axis_range, axis_range, 10),
-                         np.linspace(-axis_range, axis_range, 10))
-    zz = np.zeros_like(xx)
-    ax_world.plot_surface(xx, yy, zz, alpha=0.2, color="gray")
-    ax_cam.plot_surface(xx, yy, zz, alpha=0.2, color="gray")
+    fig = plt.figure(figsize=(18, 9))
 
-    # Draw origin (0, 0, 0) in world coords
-    ax_world.scatter([0], [0], [0], s=50, c="red", marker="x", linewidths=3, label="Origin")
-    ax_world.legend()
+    # Row 1
+    ax_img1 = fig.add_subplot(2, 3, 1)
+    ax_img1.axis("off")
+    im1 = ax_img1.imshow(video1[0])
+    ax_img1.set_title("Video 1")
 
-    # Draw origin (0, 0, 0) in camera coords
-    ax_cam.scatter([0], [0], [0], s=50, c="red", marker="x", linewidths=3, label="Origin")
-    ax_cam.legend()
+    ax_jw = fig.add_subplot(2, 3, 2, projection="3d")
+    ax_jc = fig.add_subplot(2, 3, 3, projection="3d")
 
-    # Scatter for world joints
-    scat_world = ax_world.scatter(
-        data_world[0, :, 0], data_world[0, :, 1], data_world[0, :, 2],
-        s=20, c="tab:blue", marker="o"
-    )
+    # Row 2
+    ax_img2 = fig.add_subplot(2, 3, 4)
+    ax_img2.axis("off")
+    im2 = ax_img2.imshow(video2[0])
+    ax_img2.set_title("Video 2")
 
-    # Scatter for camera joints
-    scat_cam = ax_cam.scatter(
-        data_cam[0, :, 0], data_cam[0, :, 1], data_cam[0, :, 2],
-        s=20, c="tab:orange", marker="o"
-    )
+    ax_vw = fig.add_subplot(2, 3, 5, projection="3d")
+    ax_vc = fig.add_subplot(2, 3, 6, projection="3d")
 
-    # Lines for bones (world)
-    bone_lines_world = []
+    def _setup_3d_axis(ax, title: str):
+        ax.set_title(title)
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Z")
+        ax.set_xlim(-axis_range, axis_range)
+        ax.set_ylim(-axis_range, axis_range)
+        ax.set_zlim(-axis_range, axis_range)
+        ax.set_box_aspect((1, 1, 1))
+        ax.view_init(elev=view_elev, azim=view_azim)
+        # origin
+        ax.scatter([0], [0], [0], c="red", marker="x", s=40)
+
+    _setup_3d_axis(ax_jw, "Joints World")
+    _setup_3d_axis(ax_jc, "Joints Cam")
+    _setup_3d_axis(ax_vw, "Vertices World")
+    _setup_3d_axis(ax_vc, "Vertices Cam")
+
+    # Joints scatters
+    jw = data_world[0]
+    jc = data_cam[0]
+    scat_jw = ax_jw.scatter(jw[:, 0], jw[:, 1], jw[:, 2], s=12, c="tab:blue")
+    scat_jc = ax_jc.scatter(jc[:, 0], jc[:, 1], jc[:, 2], s=12, c="tab:orange")
+
+    # Joint bones
+    bone_lines_jw = []
+    bone_lines_jc = []
     if bones:
         for i, j in bones:
-            line, = ax_world.plot(
-                [data_world[0, i, 0], data_world[0, j, 0]],
-                [data_world[0, i, 1], data_world[0, j, 1]],
-                [data_world[0, i, 2], data_world[0, j, 2]],
-                c="k", lw=1.5
-            )
-            bone_lines_world.append(line)
+            l1, = ax_jw.plot([jw[i, 0], jw[j, 0]], [jw[i, 1], jw[j, 1]], [jw[i, 2], jw[j, 2]], c="k", lw=1.0)
+            l2, = ax_jc.plot([jc[i, 0], jc[j, 0]], [jc[i, 1], jc[j, 1]], [jc[i, 2], jc[j, 2]], c="k", lw=1.0)
+            bone_lines_jw.append(l1)
+            bone_lines_jc.append(l2)
 
-    # Lines for bones (camera)
-    bone_lines_cam = []
-    if bones:
-        for i, j in bones:
-            line, = ax_cam.plot(
-                [data_cam[0, i, 0], data_cam[0, j, 0]],
-                [data_cam[0, i, 1], data_cam[0, j, 1]],
-                [data_cam[0, i, 2], data_cam[0, j, 2]],
-                c="k", lw=1.5
-            )
-            bone_lines_cam.append(line)
+    # Vertices renderers
+    vw_artist = None
+    vc_artist = None
+    vw_scatter = None
+    vc_scatter = None
+
+    def _draw_mesh(ax, verts, faces, color):
+        return ax.plot_trisurf(
+            verts[:, 0], verts[:, 1], verts[:, 2],
+            triangles=faces,
+            color=color,
+            alpha=mesh_alpha,
+            linewidth=0.0,
+            antialiased=False,
+            shade=False,
+        )
+
+    if world_vertices_frame is not None:
+        if mesh_faces is not None:
+            vw_artist = _draw_mesh(ax_vw, world_vertices_frame[0], mesh_faces, "tab:blue")
+        else:
+            v0 = world_vertices_frame[0]
+            vw_scatter = ax_vw.scatter(v0[:, 0], v0[:, 1], v0[:, 2], s=vertex_size, c="tab:blue", alpha=0.7)
+
+    if cam_vertices_frame is not None:
+        if mesh_faces is not None:
+            vc_artist = _draw_mesh(ax_vc, cam_vertices_frame[0], mesh_faces, "tab:orange")
+        else:
+            v0 = cam_vertices_frame[0]
+            vc_scatter = ax_vc.scatter(v0[:, 0], v0[:, 1], v0[:, 2], s=vertex_size, c="tab:orange", alpha=0.7)
 
     def update(f):
-        # Update video frame
-        frame_rgb = video[f].astype(np.uint8)
-        im_display.set_array(frame_rgb)
+        nonlocal vw_artist, vc_artist
 
-        # Update world joints
-        pts_world = data_world[f]
-        scat_world._offsets3d = (pts_world[:, 0], pts_world[:, 1], pts_world[:, 2])
+        # update videos
+        im1.set_array(video1[f].astype(np.uint8))
+        im2.set_array(video2[f].astype(np.uint8))
+        ax_img1.set_title(f"Video 1 | frame {f+1}/{n_frames}")
+        ax_img2.set_title(f"Video 2 | frame {f+1}/{n_frames}")
 
-        if bones:
-            for line, (i, j) in zip(bone_lines_world, bones):
-                line.set_data(
-                    [pts_world[i, 0], pts_world[j, 0]],
-                    [pts_world[i, 1], pts_world[j, 1]]
-                )
-                line.set_3d_properties([pts_world[i, 2], pts_world[j, 2]])
-
-        # Update camera joints
-        pts_cam = data_cam[f]
-        scat_cam._offsets3d = (pts_cam[:, 0], pts_cam[:, 1], pts_cam[:, 2])
+        # update joints
+        jwf = data_world[f]
+        jcf = data_cam[f]
+        scat_jw._offsets3d = (jwf[:, 0], jwf[:, 1], jwf[:, 2])
+        scat_jc._offsets3d = (jcf[:, 0], jcf[:, 1], jcf[:, 2])
 
         if bones:
-            for line, (i, j) in zip(bone_lines_cam, bones):
-                line.set_data(
-                    [pts_cam[i, 0], pts_cam[j, 0]],
-                    [pts_cam[i, 1], pts_cam[j, 1]]
-                )
-                line.set_3d_properties([pts_cam[i, 2], pts_cam[j, 2]])
+            for line, (i, j) in zip(bone_lines_jw, bones):
+                line.set_data([jwf[i, 0], jwf[j, 0]], [jwf[i, 1], jwf[j, 1]])
+                line.set_3d_properties([jwf[i, 2], jwf[j, 2]])
+            for line, (i, j) in zip(bone_lines_jc, bones):
+                line.set_data([jcf[i, 0], jcf[j, 0]], [jcf[i, 1], jcf[j, 1]])
+                line.set_3d_properties([jcf[i, 2], jcf[j, 2]])
 
-        ax_img.set_title(f"RGB Video | frame {f+1}/{n_frames}")
+        # update vertices world
+        if world_vertices_frame is not None:
+            vwf = world_vertices_frame[f]
+            if mesh_faces is not None:
+                if vw_artist is not None:
+                    vw_artist.remove()
+                vw_artist = _draw_mesh(ax_vw, vwf, mesh_faces, "tab:blue")
+            else:
+                vw_scatter._offsets3d = (vwf[:, 0], vwf[:, 1], vwf[:, 2])
 
-        artists = [im_display, scat_world, scat_cam] + bone_lines_world + bone_lines_cam
-        return artists
+        # update vertices cam
+        if cam_vertices_frame is not None:
+            vcf = cam_vertices_frame[f]
+            if mesh_faces is not None:
+                if vc_artist is not None:
+                    vc_artist.remove()
+                vc_artist = _draw_mesh(ax_vc, vcf, mesh_faces, "tab:orange")
+            else:
+                vc_scatter._offsets3d = (vcf[:, 0], vcf[:, 1], vcf[:, 2])
 
-    anim = FuncAnimation(
-        fig, update, frames=n_frames, interval=1000/fps, blit=False, repeat=False
-    )
+        return [im1, im2, scat_jw, scat_jc] + bone_lines_jw + bone_lines_jc
+
+    anim = FuncAnimation(fig, update, frames=n_frames, interval=1000 / fps, blit=False, repeat=False)
     plt.tight_layout()
 
     if save_path:
@@ -522,7 +554,6 @@ def compute_intrinsic_matrix(
         K: [3, 3] intrinsic matrix adjusted for rotation
     """
 
-    # Normal case: no rotation
     pixel_size_x = sensor_width / img_width
     pixel_size_y = sensor_height / img_height
     
@@ -638,3 +669,100 @@ def get_smplx_skeleton_simple():
     return bones
 
 
+def cam_to_right_handed(x, y, z, yaw, pitch, roll):
+    # Convert from (x=forward, y=left, z=up) to (x=right, y=down, z=forward)
+    y = -y
+    yaw = np.array(yaw)
+    pitch = np.array(pitch)
+    roll = np.array(roll)
+    yaw = 360-yaw
+    pitch = 360-pitch
+    return x, y, z, yaw, pitch, roll
+
+def project_mesh_on_video(
+    video_frames: np.ndarray,          # [T, H, W, 3], RGB
+    vertices_cam: np.ndarray,          # [T, V, 3], (x=forward, y=left, z=up)
+    faces: np.ndarray,                 # [F, 3], vertex indices
+    K: np.ndarray,                     # [3, 3]
+    stride: int = 1,
+    mesh_color: tuple[int, int, int] = (0, 255, 255),  # BGR
+    alpha: float = 0.35,
+    draw_edges: bool = True,
+    edge_color: tuple[int, int, int] = (255, 255, 255),  # BGR
+    edge_thickness: int = 1,
+    save_path: str | None = None,
+    fps: int = 6,
+) -> np.ndarray:
+    """
+    Render SMPL-X mesh overlay on video using triangle rasterization (painter's algorithm).
+    """
+    frames = video_frames[::stride]
+    verts_all = vertices_cam[::stride]
+    if len(frames) != len(verts_all):
+        raise ValueError("video_frames and vertices_cam must have same frame count")
+
+    out_frames = []
+
+    for t in range(len(frames)):
+        rgb = frames[t].copy()
+        h, w = rgb.shape[:2]
+
+        # OpenCV drawing in BGR
+        base = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        overlay = base.copy()
+
+        v = verts_all[t]  # (forward,left,up)
+
+        # Convert to OpenCV camera coords: (right,down,forward)
+        vcv = np.empty_like(v)
+        vcv[:, 0] = -v[:, 1]  # right
+        vcv[:, 1] = -v[:, 2]  # down
+        vcv[:, 2] =  v[:, 0]  # forward (depth)
+
+        z = vcv[:, 2]
+        valid_v = z > 1e-8
+
+        # Project all vertices
+        proj = (K @ vcv.T).T
+        uv = proj[:, :2] / (proj[:, 2:3] + 1e-8)  # [V,2]
+        uv_i = np.round(uv).astype(np.int32)
+
+        # Depth sort triangles (far -> near) for painter's algorithm
+        tri_z = z[faces].mean(axis=1)
+        order = np.argsort(tri_z)[::-1]  # far first
+
+        for fi in order:
+            i0, i1, i2 = faces[fi]
+            if not (valid_v[i0] and valid_v[i1] and valid_v[i2]):
+                continue
+
+            tri = np.array([uv_i[i0], uv_i[i1], uv_i[i2]], dtype=np.int32)
+
+            # quick bbox check
+            xmin, ymin = tri[:, 0].min(), tri[:, 1].min()
+            xmax, ymax = tri[:, 0].max(), tri[:, 1].max()
+            if xmax < 0 or ymax < 0 or xmin >= w or ymin >= h:
+                continue
+
+            cv2.fillConvexPoly(overlay, tri, mesh_color, lineType=cv2.LINE_AA)
+            if draw_edges:
+                cv2.polylines(
+                    overlay, [tri], isClosed=True,
+                    color=edge_color, thickness=edge_thickness, lineType=cv2.LINE_AA
+                )
+
+        blended = cv2.addWeighted(overlay, alpha, base, 1.0 - alpha, 0.0)
+        out_rgb = cv2.cvtColor(blended, cv2.COLOR_BGR2RGB)
+        out_frames.append(out_rgb)
+
+    out_frames = np.asarray(out_frames, dtype=np.uint8)
+
+    if save_path:
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        hh, ww = out_frames[0].shape[:2]
+        writer = cv2.VideoWriter(save_path, fourcc, fps, (ww, hh))
+        for fr in out_frames:
+            writer.write(cv2.cvtColor(fr, cv2.COLOR_RGB2BGR))
+        writer.release()
+
+    return out_frames
