@@ -30,7 +30,7 @@ import torch
 import torch.nn as nn
 from torch.amp import GradScaler
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data import get_splits, build_train_transform, build_dataloader
 from model import SapiensPose3D
 

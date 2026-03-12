@@ -23,3 +23,4 @@ data/frames/
 # Misc
 .DS_Store
 *.swp
+runs/vis_depth_joints/

@@ -14,11 +14,14 @@ Always use `conda run -n sapiens_gpu python ...` or activate `sapiens_gpu` first
 
 ```bash
 # One-time: extract video frames to JPEGs (required before training)
-python extract_frames.py --data-root /home/hang/repos_local/MMC/BEDLAM2Datatest --workers 8
+python scripts/extract_frames.py --data-root /home/hang/repos_local/MMC/BEDLAM2Datatest --workers 8
+
+# One-time: convert depth NPZ → NPY mmap for 3× faster loading
+python scripts/convert_depth_npy.py --data-root /home/hang/repos_local/MMC/BEDLAM2Datatest --workers 8
 
 # Smoke tests
-python test_data_pipeline.py
-python test_model.py
+python tests/test_data_pipeline.py
+python tests/test_model.py
 
 # Train
 python train.py \
@@ -31,6 +34,12 @@ python train.py ... --resume runs/exp001/best.pth
 
 # Quick debug (cap batches)
 python train.py ... --max-batches 5
+
+# Profile data loading / forward / backward timing
+python scripts/profile_timing.py --data-root ... --output-dir runs/profile
+
+# Visualize GT joints + depth overlay
+python scripts/visualize_depth_joints.py --data-root ... --output-dir runs/vis
 
 # Monitor
 tensorboard --logdir runs
@@ -85,7 +94,9 @@ Backbone imports from `/home/hang/repos_local/MMC/sapiens/` (paths hardcoded in 
 
 **Splits:** Always sequence-level (not frame-level) to prevent data leakage; seed=2026
 
-**JPG-first:** Training requires pre-extracted frames under `data/frames/<folder>/<seq>/<idx:05d>.jpg`; run `extract_frames.py` once before any training.
+**JPG-first:** Training requires pre-extracted frames under `data/frames/<folder>/<seq>/<idx:05d>.jpg`; run `scripts/extract_frames.py` once before any training.
+
+**Depth NPY:** Pre-converted depth at `data/depth/npy/` (float16, 384×640) is used by default for fast mmap loading. Falls back to `data/depth/npz/` if NPY is missing. Run `scripts/convert_depth_npy.py` once after extraction.
 
 ## Key File Paths
 - Checkpoint: `checkpoints/sapiens_0.3b_epoch_1600_clean.pth`

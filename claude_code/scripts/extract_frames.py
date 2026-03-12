@@ -22,7 +22,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.constants import FRAME_STRIDE
 from data.splits import get_seq_paths
 

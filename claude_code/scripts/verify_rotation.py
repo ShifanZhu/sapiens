@@ -17,7 +17,7 @@ import os, sys
 import numpy as np
 import cv2
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 DATA_ROOT = "/home/hang/repos_local/MMC/BEDLAM2Datatest"
 OUT_DIR   = "verify_output"
