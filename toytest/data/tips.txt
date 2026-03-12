@@ -1,0 +1,6 @@
+Riht handed cooradinate system: x is forward, y is left, z is up with unit meter
+Angles are in degrees. Camera rotation order is yaw, picth, roll. 
+joints_2d are in pixel coordinates with x right and y down.
+joints_2d_mask is False if and only if the joint is behind the camera. Does not mean it is off the image.
+
+shape [n_frames, n_joints, 3]
