@@ -90,7 +90,7 @@ Backbone imports from `/home/hang/repos_local/MMC/sapiens/` (paths hardcoded in 
 - Depth NPZ is **already stored upright** — never rotate it
 - Intrinsic K and joints_2d labels are always in the upright frame — never transform K
 
-**Input resolution:** 384×640 (H×W) — must be multiples of patch size 16
+**Input resolution:** 640×384 (H×W) — portrait orientation for person crops; must be multiples of patch size 16
 
 **Splits:** Always sequence-level (not frame-level) to prevent data leakage; seed=2026
 

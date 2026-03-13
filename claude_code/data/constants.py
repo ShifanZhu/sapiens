@@ -1,6 +1,7 @@
 """SMPL-X joint constants for BEDLAM2."""
 
 NUM_JOINTS = 127
+PELVIS_IDX = 0
 
 JOINT_NAMES = [
     # 0-21: Core body

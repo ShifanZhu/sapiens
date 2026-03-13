@@ -1,8 +1,9 @@
 """3D pose regression head for Sapiens-RGBD.
 
-Takes the ViT feature map (B, C, H', W') and regresses
-(B, num_joints, 3) camera-space coordinates in the
-(X=forward, Y=left, Z=up) convention of BEDLAM2.
+Takes the ViT feature map (B, C, H', W') and regresses:
+  - (B, num_joints, 3) root-relative joint coordinates
+  - (B, 1)             pelvis depth in metres (forward distance)
+  - (B, 2)             pelvis 2D position in crop pixel coordinates
 
 Architecture:
     Feature map (B, C, H', W')
@@ -10,8 +11,9 @@ Architecture:
         → flatten                        (B, C)
         → Linear(C, hidden)              (B, hidden)
         → LayerNorm + GELU
-        → Linear(hidden, num_joints*3)   (B, num_joints*3)
-        → reshape                        (B, num_joints, 3)
+        ├→ Linear(hidden, num_joints*3)  → joints_rel  (B, num_joints, 3)
+        ├→ Linear(hidden, 1)             → pelvis_depth (B, 1)
+        └→ Linear(hidden, 2)             → pelvis_uv    (B, 2)
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import torch.nn as nn
 
 
 class Pose3DHead(nn.Module):
-    """Lightweight MLP regression head for 3D joint prediction.
+    """MLP regression head for 3D joint prediction + pelvis localization.
 
     Args:
         in_channels:  Embedding dimension from the backbone (e.g. 1024).
@@ -42,31 +44,49 @@ class Pose3DHead(nn.Module):
 
         self.pool = nn.AdaptiveAvgPool2d(1)
 
-        self.mlp = nn.Sequential(
+        # Shared trunk
+        self.trunk = nn.Sequential(
             nn.Linear(in_channels, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_joints * 3),
         )
+
+        # Task-specific output branches
+        self.joints_out = nn.Linear(hidden_dim, num_joints * 3)
+        self.depth_out = nn.Linear(hidden_dim, 1)
+        self.uv_out = nn.Linear(hidden_dim, 2)
 
         self._init_weights()
 
     def _init_weights(self):
-        for m in self.mlp.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.trunc_normal_(m.weight, std=0.02)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
+        for m in [self.trunk, self.joints_out, self.depth_out, self.uv_out]:
+            for sub in (m.modules() if hasattr(m, 'modules') else [m]):
+                if isinstance(sub, nn.Linear):
+                    nn.init.trunc_normal_(sub.weight, std=0.02)
+                    if sub.bias is not None:
+                        nn.init.zeros_(sub.bias)
 
-    def forward(self, feat: torch.Tensor) -> torch.Tensor:
+    def forward(self, feat: torch.Tensor) -> dict[str, torch.Tensor]:
         """
         Args:
             feat: ``(B, C, H', W')`` backbone feature map.
 
         Returns:
-            ``(B, num_joints, 3)`` camera-space joint coordinates (metres).
+            Dict with:
+                ``joints``:       ``(B, num_joints, 3)`` root-relative coords (metres)
+                ``pelvis_depth``: ``(B, 1)`` pelvis forward distance (metres)
+                ``pelvis_uv``:    ``(B, 2)`` pelvis (u, v) in crop pixels
         """
         x = self.pool(feat).flatten(1)       # (B, C)
-        x = self.mlp(x)                      # (B, num_joints*3)
-        return x.view(x.size(0), self.num_joints, 3)
+        h = self.trunk(x)                    # (B, hidden)
+
+        joints = self.joints_out(h).view(h.size(0), self.num_joints, 3)
+        pelvis_depth = self.depth_out(h)     # (B, 1)
+        pelvis_uv = self.uv_out(h)          # (B, 2)
+
+        return {
+            "joints": joints,
+            "pelvis_depth": pelvis_depth,
+            "pelvis_uv": pelvis_uv,
+        }

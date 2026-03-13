@@ -58,8 +58,8 @@ def parse_args() -> argparse.Namespace:
     # model
     p.add_argument("--arch",        default="sapiens_0.3b",
                    choices=["sapiens_0.3b", "sapiens_0.6b", "sapiens_1b", "sapiens_2b"])
-    p.add_argument("--img-h",       type=int, default=384)
-    p.add_argument("--img-w",       type=int, default=640)
+    p.add_argument("--img-h",       type=int, default=640)
+    p.add_argument("--img-w",       type=int, default=384)
     p.add_argument("--head-hidden", type=int, default=2048)
     p.add_argument("--drop-path",   type=float, default=0.1)
     p.add_argument("--head-dropout",type=float, default=0.2)
@@ -93,6 +93,12 @@ def parse_args() -> argparse.Namespace:
                         "consecutive val checks (0=disabled)")
     p.add_argument("--no-scale-jitter", action="store_true", default=False,
                    help="Disable RandomResizedCropRGBD scale-jitter augmentation")
+    p.add_argument("--single-body-only", action="store_true", default=False,
+                   help="Only use single-person sequences (exclude multi-person)")
+    p.add_argument("--lambda-depth", type=float, default=1.0,
+                   help="Loss weight for pelvis depth prediction")
+    p.add_argument("--lambda-uv", type=float, default=1.0,
+                   help="Loss weight for pelvis UV prediction (normalized to [-1,1])")
 
     return p.parse_args()
 
@@ -144,8 +150,10 @@ def get_lr_scale(epoch: int, total_epochs: int, warmup_epochs: int) -> float:
 
 _CSV_FIELDNAMES = [
     "epoch", "lr_backbone", "lr_head",
-    "train_loss", "train_mpjpe_body",
-    "val_loss", "val_mpjpe_all", "val_mpjpe_body", "val_mpjpe_hand",
+    "train_loss", "train_loss_pose", "train_loss_depth", "train_loss_uv",
+    "train_mpjpe_body",
+    "val_loss", "val_loss_pose", "val_loss_depth", "val_loss_uv",
+    "val_mpjpe_all", "val_mpjpe_body", "val_mpjpe_hand",
     "epoch_time",
 ]
 
@@ -179,15 +187,20 @@ _VIS_FRAMES = 16   # frames per visualization video
 
 def draw_pose_frame(
     rgb_chw: np.ndarray,   # (3, H, W) uint8
-    joints: np.ndarray,    # (127, 3)  metres, camera space
+    joints: np.ndarray,    # (127, 3)  metres, root-relative or absolute
     K: np.ndarray,         # (3, 3)
+    pelvis_abs: np.ndarray | None = None,  # (3,) — if given, joints are root-relative
+    color: tuple[int, int, int] = (0, 255, 0),
 ) -> np.ndarray:
     """Draw all 127 predicted joints + skeleton on one RGB frame. Returns (3,H,W) uint8."""
     import cv2
 
+    # If root-relative, convert to absolute for projection
+    if pelvis_abs is not None:
+        joints = joints + pelvis_abs[np.newaxis, :]
+
     img = np.ascontiguousarray(rgb_chw.transpose(1, 2, 0)[:, :, ::-1])  # HWC BGR
     H, W = img.shape[:2]
-    color = (0, 255, 0)  # green
 
     X, Y, Z = joints[:, 0], joints[:, 1], joints[:, 2]
     valid = X > 0.01
@@ -214,22 +227,26 @@ def draw_pose_frame(
 
 
 def build_val_video(
-    rgb_frames: list[np.ndarray],   # list of (3, H, W) uint8
-    pred_frames: list[np.ndarray],  # list of (127, 3) float32
-    K_frames: list[np.ndarray],     # list of (3, 3) float32
+    rgb_frames: list[np.ndarray],      # list of (3, H, W) uint8
+    pred_frames: list[np.ndarray],     # list of (127, 3) float32
+    K_frames: list[np.ndarray],        # list of (3, 3) float32
+    pelvis_frames: list[np.ndarray | None] | None = None,  # list of (3,) float32
 ) -> np.ndarray:
     """Return (1, T, 3, H, W) uint8 for writer.add_video()."""
-    frames = [draw_pose_frame(r, p, k)
-              for r, p, k in zip(rgb_frames, pred_frames, K_frames)]
+    if pelvis_frames is None:
+        pelvis_frames = [None] * len(rgb_frames)
+    frames = [draw_pose_frame(r, p, k, pelvis_abs=pa)
+              for r, p, k, pa in zip(rgb_frames, pred_frames, K_frames, pelvis_frames)]
     return np.stack(frames, axis=0)[np.newaxis]  # (1, T, 3, H, W)
 
 
 def select_vis_indices(dataset, n_seqs: int) -> list[int]:
     """Return the flat index of the first frame from each unique sequence (up to n_seqs)."""
     seen: dict[str, int] = {}
-    for i, (label_path, _) in enumerate(dataset.index):
-        if label_path not in seen:
-            seen[label_path] = i
+    for i, (label_path, body_idx, _frame_idx) in enumerate(dataset.index):
+        key = (label_path, body_idx)
+        if key not in seen:
+            seen[key] = i
         if len(seen) >= n_seqs:
             break
     return list(seen.values())
@@ -252,11 +269,12 @@ def visualize_fixed_samples(
     videos = []
     try:
         for start_idx in indices:
-            label_path = dataset.index[start_idx][0]
-            rgb_frames, pred_frames, K_frames = [], [], []
+            label_path, body_idx, _ = dataset.index[start_idx]
+            rgb_frames, pred_frames, K_frames, pelvis_frames = [], [], [], []
             i = start_idx
             while len(rgb_frames) < _VIS_FRAMES and i < len(dataset.index):
-                if dataset.index[i][0] != label_path:
+                lp, bi, _ = dataset.index[i]
+                if lp != label_path or bi != body_idx:
                     break
                 sample = dataset[i]
                 rgb_t   = sample["rgb"]        # (3, H, W) float32 normalized
@@ -265,16 +283,23 @@ def visualize_fixed_samples(
 
                 x = torch.cat([rgb_t.unsqueeze(0), depth_t.unsqueeze(0)], dim=1).to(device)
                 with torch.no_grad():
-                    pred = model(x)            # (1, 127, 3)
+                    out = model(x)
+                    pred = out["joints"]       # (1, 127, 3)
 
                 rgb_u8 = ((rgb_t * _RGB_STD_T + _RGB_MEAN_T).clamp(0, 1) * 255).byte().numpy()
                 rgb_frames.append(rgb_u8)
                 pred_frames.append(pred[0].float().cpu().numpy())
                 K_frames.append(K_t.numpy() if isinstance(K_t, torch.Tensor) else K_t)
+                # pelvis_abs for root-relative → absolute conversion in vis
+                if "pelvis_abs" in sample:
+                    pa = sample["pelvis_abs"]
+                    pelvis_frames.append(pa.numpy() if isinstance(pa, torch.Tensor) else pa)
+                else:
+                    pelvis_frames.append(None)
                 i += 1
 
             if rgb_frames:
-                videos.append(build_val_video(rgb_frames, pred_frames, K_frames))
+                videos.append(build_val_video(rgb_frames, pred_frames, K_frames, pelvis_frames))
     finally:
         dataset.transform = orig_transform
 
@@ -296,6 +321,9 @@ def train_one_epoch(
     optimizer.zero_grad()
 
     total_loss = 0.0
+    total_loss_pose = 0.0
+    total_loss_depth = 0.0
+    total_loss_uv = 0.0
     total_mpjpe_body = 0.0
     n_batches = 0
 
@@ -303,15 +331,24 @@ def train_one_epoch(
     pbar = tqdm(loader, total=total, desc=f"Epoch {epoch} [train]", leave=True)
 
     for i, batch in enumerate(pbar):
-        rgb    = batch["rgb"].to(device, non_blocking=True)     # (B, 3, H, W)
-        depth  = batch["depth"].to(device, non_blocking=True)   # (B, 1, H, W)
-        joints = batch["joints"].to(device, non_blocking=True)  # (B, 127, 3)
+        rgb          = batch["rgb"].to(device, non_blocking=True)           # (B, 3, H, W)
+        depth        = batch["depth"].to(device, non_blocking=True)         # (B, 1, H, W)
+        joints       = batch["joints"].to(device, non_blocking=True)        # (B, 127, 3)
+        gt_depth     = batch["pelvis_depth"].to(device, non_blocking=True)  # (B, 1)
+        gt_uv        = batch["pelvis_uv"].to(device, non_blocking=True)     # (B, 2)
 
-        x = torch.cat([rgb, depth], dim=1)                      # (B, 4, H, W)
+        x = torch.cat([rgb, depth], dim=1)                                  # (B, 4, H, W)
 
         with torch.amp.autocast("cuda", enabled=args.amp):
-            pred = model(x)                                      # (B, 127, 3)
-            loss = pose_loss(pred, joints) / args.accum_steps
+            out = model(x)
+            pred_joints = out["joints"]           # (B, 127, 3)
+            pred_depth  = out["pelvis_depth"]     # (B, 1)
+            pred_uv     = out["pelvis_uv"]        # (B, 2)
+
+            l_pose  = pose_loss(pred_joints, joints)
+            l_depth = nn.functional.smooth_l1_loss(pred_depth, gt_depth, beta=0.05)
+            l_uv    = nn.functional.smooth_l1_loss(pred_uv, gt_uv, beta=0.05)
+            loss = (l_pose + args.lambda_depth * l_depth + args.lambda_uv * l_uv) / args.accum_steps
 
         scaler.scale(loss).backward()
 
@@ -325,7 +362,10 @@ def train_one_epoch(
 
         with torch.no_grad():
             total_loss       += loss.item() * args.accum_steps
-            total_mpjpe_body += mpjpe(pred.float(), joints, BODY_IDX).item()
+            total_loss_pose  += l_pose.item()
+            total_loss_depth += l_depth.item()
+            total_loss_uv    += l_uv.item()
+            total_mpjpe_body += mpjpe(pred_joints.float(), joints, BODY_IDX).item()
         n_batches += 1
 
         pbar.set_postfix(loss=f"{total_loss/n_batches:.4f}",
@@ -335,9 +375,13 @@ def train_one_epoch(
             break
 
     pbar.close()
+    n = max(1, n_batches)
     return {
-        "train_loss":       total_loss       / max(1, n_batches),
-        "train_mpjpe_body": total_mpjpe_body / max(1, n_batches),
+        "train_loss":       total_loss       / n,
+        "train_loss_pose":  total_loss_pose  / n,
+        "train_loss_depth": total_loss_depth / n,
+        "train_loss_uv":    total_loss_uv    / n,
+        "train_mpjpe_body": total_mpjpe_body / n,
     }
 
 
@@ -351,6 +395,9 @@ def validate(
     model.eval()
 
     total_loss  = 0.0
+    total_loss_pose  = 0.0
+    total_loss_depth = 0.0
+    total_loss_uv    = 0.0
     sum_all     = 0.0
     sum_body    = 0.0
     sum_hand    = 0.0
@@ -360,19 +407,31 @@ def validate(
     pbar = tqdm(loader, total=total, desc="         [val] ", leave=True)
 
     for batch in pbar:
-        rgb    = batch["rgb"].to(device, non_blocking=True)
-        depth  = batch["depth"].to(device, non_blocking=True)
-        joints = batch["joints"].to(device, non_blocking=True)
+        rgb      = batch["rgb"].to(device, non_blocking=True)
+        depth    = batch["depth"].to(device, non_blocking=True)
+        joints   = batch["joints"].to(device, non_blocking=True)
+        gt_depth = batch["pelvis_depth"].to(device, non_blocking=True)
+        gt_uv    = batch["pelvis_uv"].to(device, non_blocking=True)
 
         x = torch.cat([rgb, depth], dim=1)
 
         with torch.amp.autocast("cuda", enabled=args.amp):
-            pred = model(x)
+            out = model(x)
+            pred_joints = out["joints"]
+            pred_depth  = out["pelvis_depth"]
+            pred_uv     = out["pelvis_uv"]
 
-        total_loss += pose_loss(pred.float(), joints).item()
-        sum_all    += mpjpe(pred.float(), joints).item()
-        sum_body   += mpjpe(pred.float(), joints, BODY_IDX).item()
-        sum_hand   += mpjpe(pred.float(), joints, HAND_IDX).item()
+        l_pose  = pose_loss(pred_joints.float(), joints).item()
+        l_depth = nn.functional.smooth_l1_loss(pred_depth.float(), gt_depth, beta=0.05).item()
+        l_uv    = nn.functional.smooth_l1_loss(pred_uv.float(), gt_uv, beta=0.05).item()
+
+        total_loss       += l_pose + args.lambda_depth * l_depth + args.lambda_uv * l_uv
+        total_loss_pose  += l_pose
+        total_loss_depth += l_depth
+        total_loss_uv    += l_uv
+        sum_all    += mpjpe(pred_joints.float(), joints).item()
+        sum_body   += mpjpe(pred_joints.float(), joints, BODY_IDX).item()
+        sum_hand   += mpjpe(pred_joints.float(), joints, HAND_IDX).item()
         n_batches  += 1
 
         pbar.set_postfix(mpjpe_body=f"{sum_body/n_batches:.1f}mm",
@@ -386,6 +445,9 @@ def validate(
     n = max(1, n_batches)
     return {
         "val_loss":       total_loss / n,
+        "val_loss_pose":  total_loss_pose / n,
+        "val_loss_depth": total_loss_depth / n,
+        "val_loss_uv":    total_loss_uv / n,
         "val_mpjpe_all":  sum_all    / n,
         "val_mpjpe_body": sum_body   / n,
         "val_mpjpe_hand": sum_hand   / n,
@@ -401,7 +463,14 @@ def save_checkpoint(state: dict, path: str):
 
 def load_checkpoint(model, optimizer, scaler, path: str, device: torch.device):
     ckpt = torch.load(path, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["model"])
+    # Handle old checkpoints that used head.mlp instead of head.trunk + branches
+    ckpt_sd = ckpt["model"]
+    try:
+        model.load_state_dict(ckpt_sd)
+    except RuntimeError:
+        # Old checkpoint — load what matches, let new head layers init randomly
+        model.load_state_dict(ckpt_sd, strict=False)
+        print("  Warning: loaded checkpoint with strict=False (head structure changed)")
     optimizer.load_state_dict(ckpt["optimizer"])
     scaler.load_state_dict(ckpt["scaler"])
     start_epoch = ckpt["epoch"] + 1
@@ -428,7 +497,7 @@ def main():
         val_ratio=args.val_ratio,
         test_ratio=args.test_ratio,
         seed=args.seed,
-        single_body_only=True,
+        single_body_only=args.single_body_only,
         skip_missing_body=True,
         depth_required=True,
         mp4_required=False,
@@ -522,6 +591,9 @@ def main():
 
         # TensorBoard: train scalars every epoch
         writer.add_scalar("train/loss",       train_metrics["train_loss"],       epoch + 1)
+        writer.add_scalar("train/loss_pose",  train_metrics["train_loss_pose"],  epoch + 1)
+        writer.add_scalar("train/loss_depth", train_metrics["train_loss_depth"], epoch + 1)
+        writer.add_scalar("train/loss_uv",    train_metrics["train_loss_uv"],    epoch + 1)
         writer.add_scalar("train/mpjpe_body", train_metrics["train_mpjpe_body"], epoch + 1)
 
         # Conditional validation
@@ -529,6 +601,9 @@ def main():
         if (epoch + 1) % args.val_interval == 0 or (epoch + 1) == args.epochs:
             val_metrics = validate(model, val_loader, device, args)
             writer.add_scalar("val/loss",        val_metrics["val_loss"],        epoch + 1)
+            writer.add_scalar("val/loss_pose",   val_metrics["val_loss_pose"],   epoch + 1)
+            writer.add_scalar("val/loss_depth",  val_metrics["val_loss_depth"],  epoch + 1)
+            writer.add_scalar("val/loss_uv",     val_metrics["val_loss_uv"],     epoch + 1)
             writer.add_scalar("val/mpjpe_all",   val_metrics["val_mpjpe_all"],   epoch + 1)
             writer.add_scalar("val/mpjpe_body",  val_metrics["val_mpjpe_body"],  epoch + 1)
             writer.add_scalar("val/mpjpe_hand",  val_metrics["val_mpjpe_hand"],  epoch + 1)
