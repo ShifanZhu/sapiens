@@ -30,7 +30,12 @@ def convert_one(args_tuple):
     npz_path, npy_path, out_h, out_w = args_tuple
     npy_path = Path(npy_path)
     if npy_path.exists():
-        return str(npz_path), "skip"
+        # Validate: try to mmap the file; delete and re-convert if truncated
+        try:
+            np.load(str(npy_path), mmap_mode="r")
+            return str(npz_path), "skip"
+        except (ValueError, OSError):
+            npy_path.unlink()  # truncated — delete and fall through to re-convert
     try:
         with np.load(str(npz_path)) as f:
             depth = f["depth"]  # (n_frames, H, W) float32

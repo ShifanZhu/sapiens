@@ -11,7 +11,8 @@
       "WebSearch",
       "Read(//home/hang/repos_local/MMC/BEDLAM2Datatest/data/**)",
       "Bash(python3 << 'EOFPYTHON'\nimport numpy as np\nnpz_file = \"/home/hang/repos_local/MMC/BEDLAM2Datatest/data/depth/npz/20240808_1_250_ai1105_vcam/seq_000005.npz\"\ntry:\n    data = np.load\\(npz_file\\)\n    print\\(\"NPZ keys:\", list\\(data.keys\\(\\)\\)\\)\n    for key in data.keys\\(\\):\n        print\\(f\"  {key}: shape={data[key].shape}, dtype={data[key].dtype}\"\\)\nexcept Exception as e:\n    print\\(f\"Error: {e}\"\\)\nEOFPYTHON)",
-      "Bash(conda run:*)"
+      "Bash(conda run:*)",
+      "Bash(nvidia-smi --query-compute-apps=pid,used_memory,name --format=csv,noheader)"
     ]
   }
 }

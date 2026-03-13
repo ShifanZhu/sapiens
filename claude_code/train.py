@@ -495,7 +495,7 @@ def train_one_epoch(
     n_batches = 0
 
     total = args.max_batches if args.max_batches > 0 else len(loader)
-    pbar = tqdm(loader, total=total, desc=f"Epoch {epoch} [train]", leave=True)
+    pbar = tqdm(loader, total=total, desc=f"Epoch {epoch} [train]", leave=True, dynamic_ncols=True)
 
     for i, batch in enumerate(pbar):
         rgb          = batch["rgb"].to(device, non_blocking=True)           # (B, 3, H, W)
@@ -571,7 +571,7 @@ def validate(
     n_batches   = 0
 
     total = args.max_batches if args.max_batches > 0 else len(loader)
-    pbar = tqdm(loader, total=total, desc="         [val] ", leave=True)
+    pbar = tqdm(loader, total=total, desc="         [val] ", leave=True, dynamic_ncols=True)
 
     for batch in pbar:
         rgb      = batch["rgb"].to(device, non_blocking=True)
