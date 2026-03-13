@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(journalctl --since \"3 hours ago\" 2>/dev/null | grep -iE \"kill|oom|out of memory|python|train\" | tail -30)",
+      "Read(//sys/devices/pci0000:00/0000:00:06.0/0000:02:00.0/**)",
+      "Bash(nvme list:*)",
+      "Bash(journalctl -b 0 --no-pager -k 2>/dev/null | grep -iE \"nvidia|gpu|drm|display|thermal|temperature|overheat|watchdog|nmi|panic|reboot|shutdown\" | head -30)"
+    ]
+  }
+}

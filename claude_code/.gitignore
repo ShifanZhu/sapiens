@@ -1,0 +1,26 @@
+# Checkpoints (too large for GitHub)
+checkpoints/
+
+# Training runs — ignore large .pth files, keep metrics/logs
+runs/**/*.pth
+runs/**/tb/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data (raw dataset, not code)
+data/frames/
+
+# Misc
+.DS_Store
+*.swp
+runs/vis_depth_joints/
