@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import random
 import resource
 import sys
 import time
@@ -83,8 +84,8 @@ def parse_args() -> argparse.Namespace:
 
     # misc
     p.add_argument("--log-interval",  type=int, default=50,  help="Print every N batches")
-    p.add_argument("--save-interval", type=int, default=5,   help="Save checkpoint every N epochs")
-    p.add_argument("--val-interval",  type=int, default=5,   help="Run validation every N epochs (default 5)")
+    p.add_argument("--save-interval", type=int, default=10,   help="Save checkpoint every N epochs")
+    p.add_argument("--val-interval",  type=int, default=1,   help="Run validation every N epochs (default 5)")
     p.add_argument("--max-batches",   type=int, default=0,   help="Cap batches per epoch (0=unlimited, for quick debug)")
     p.add_argument("--amp",         action="store_true", default=True)
     p.add_argument("--no-amp",      dest="amp", action="store_false")
@@ -240,16 +241,74 @@ def build_val_video(
     return np.stack(frames, axis=0)[np.newaxis]  # (1, T, 3, H, W)
 
 
-def select_vis_indices(dataset, n_seqs: int) -> list[int]:
-    """Return the flat index of the first frame from each unique sequence (up to n_seqs)."""
-    seen: dict[str, int] = {}
+def select_vis_indices(
+    dataset,
+    n_rotate_true: int = 1,
+    n_rotate_false: int = 2,
+) -> list[int]:
+    """Return flat indices of the first frame from sequences satisfying the rotate_flag distribution.
+
+    Reads ``rotate_flag`` from each unique sequence's label NPZ.
+    Returns ``n_rotate_true + n_rotate_false`` indices:
+    ``[rotate_true_idx, rotate_false_idx_0, rotate_false_idx_1]``.
+    """
+    true_indices: list[int] = []
+    false_indices: list[int] = []
+    seen: set = set()
+
     for i, (label_path, body_idx, _frame_idx) in enumerate(dataset.index):
         key = (label_path, body_idx)
-        if key not in seen:
-            seen[key] = i
-        if len(seen) >= n_seqs:
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if len(true_indices) >= n_rotate_true and len(false_indices) >= n_rotate_false:
             break
-    return list(seen.values())
+
+        try:
+            with np.load(label_path, allow_pickle=True) as f:
+                rotate_flag = bool(f["rotate_flag"])
+        except Exception:
+            rotate_flag = False
+
+        if rotate_flag and len(true_indices) < n_rotate_true:
+            true_indices.append(i)
+        elif not rotate_flag and len(false_indices) < n_rotate_false:
+            false_indices.append(i)
+
+    return true_indices + false_indices
+
+
+def sample_random_vis_index(dataset) -> int:
+    """Return flat index of the first frame from a randomly selected sequence."""
+    seq_first: dict[tuple, int] = {}
+    for i, (label_path, body_idx, _frame_idx) in enumerate(dataset.index):
+        key = (label_path, body_idx)
+        if key not in seq_first:
+            seq_first[key] = i
+    key = random.choice(list(seq_first.keys()))
+    return seq_first[key]
+
+
+def recover_pelvis_from_pred(
+    pred_depth: float,
+    pred_uv: np.ndarray,          # (2,) normalized to [-1, 1]
+    K: np.ndarray,                # (3, 3) crop intrinsic
+    crop_hw: tuple[int, int] = (640, 384),
+) -> np.ndarray:
+    """Recover absolute pelvis XYZ from predicted depth and UV.
+
+    Returns ``(3,)`` float32 ``[X, Y, Z]`` in camera space metres.
+    """
+    crop_h, crop_w = crop_hw
+    u_crop = (pred_uv[0] + 1.0) / 2.0 * crop_w
+    v_crop = (pred_uv[1] + 1.0) / 2.0 * crop_h
+    X = float(pred_depth)
+    fx, cx = float(K[0, 0]), float(K[0, 2])
+    fy, cy = float(K[1, 1]), float(K[1, 2])
+    Y = -(u_crop - cx) * X / fx
+    Z = -(v_crop - cy) * X / fy
+    return np.array([X, Y, Z], dtype=np.float32)
 
 
 def visualize_fixed_samples(
@@ -258,19 +317,24 @@ def visualize_fixed_samples(
     indices: list[int],
     device: torch.device,
     val_tf,
-) -> list[np.ndarray]:
+) -> list[tuple[np.ndarray, np.ndarray]]:
     """Render _VIS_FRAMES-frame pose-overlay videos for each starting index.
 
     Uses val_tf (no augmentation) regardless of the dataset's own transform.
-    Returns a list of (1, T, 3, H, W) uint8 arrays ready for writer.add_video().
+    Returns a list of ``(vid_gt, vid_pred)`` pairs, one per starting index.
+    ``vid_gt`` anchors joints at GT pelvis; ``vid_pred`` anchors at the pelvis
+    recovered from ``pred_depth`` + ``pred_uv``.  Each video is
+    ``(1, T, 3, H, W)`` uint8 ready for ``writer.add_video()``.
     """
     orig_transform = dataset.transform
     dataset.transform = val_tf   # deterministic, no jitter
-    videos = []
+    result = []
     try:
         for start_idx in indices:
             label_path, body_idx, _ = dataset.index[start_idx]
-            rgb_frames, pred_frames, K_frames, pelvis_frames = [], [], [], []
+            rgb_frames, pred_frames, K_frames = [], [], []
+            gt_pelvis_frames: list[np.ndarray | None] = []
+            pred_pelvis_frames: list[np.ndarray] = []
             i = start_idx
             while len(rgb_frames) < _VIS_FRAMES and i < len(dataset.index):
                 lp, bi, _ = dataset.index[i]
@@ -284,26 +348,38 @@ def visualize_fixed_samples(
                 x = torch.cat([rgb_t.unsqueeze(0), depth_t.unsqueeze(0)], dim=1).to(device)
                 with torch.no_grad():
                     out = model(x)
-                    pred = out["joints"]       # (1, 127, 3)
+                    pred    = out["joints"]        # (1, 127, 3)
+                    p_depth = out["pelvis_depth"]  # (1, 1)
+                    p_uv    = out["pelvis_uv"]     # (1, 2)
 
                 rgb_u8 = ((rgb_t * _RGB_STD_T + _RGB_MEAN_T).clamp(0, 1) * 255).byte().numpy()
+                K_np   = K_t.numpy() if isinstance(K_t, torch.Tensor) else K_t
                 rgb_frames.append(rgb_u8)
                 pred_frames.append(pred[0].float().cpu().numpy())
-                K_frames.append(K_t.numpy() if isinstance(K_t, torch.Tensor) else K_t)
-                # pelvis_abs for root-relative → absolute conversion in vis
+                K_frames.append(K_np)
+
+                # GT pelvis
                 if "pelvis_abs" in sample:
                     pa = sample["pelvis_abs"]
-                    pelvis_frames.append(pa.numpy() if isinstance(pa, torch.Tensor) else pa)
+                    gt_pelvis_frames.append(pa.numpy() if isinstance(pa, torch.Tensor) else pa)
                 else:
-                    pelvis_frames.append(None)
+                    gt_pelvis_frames.append(None)
+
+                # Predicted pelvis recovered from model outputs
+                pd_val = p_depth[0, 0].float().cpu().item()
+                pu_val = p_uv[0].float().cpu().numpy()
+                pred_pelvis_frames.append(recover_pelvis_from_pred(pd_val, pu_val, K_np))
+
                 i += 1
 
             if rgb_frames:
-                videos.append(build_val_video(rgb_frames, pred_frames, K_frames, pelvis_frames))
+                vid_gt   = build_val_video(rgb_frames, pred_frames, K_frames, gt_pelvis_frames)
+                vid_pred = build_val_video(rgb_frames, pred_frames, K_frames, pred_pelvis_frames)
+                result.append((vid_gt, vid_pred))
     finally:
         dataset.transform = orig_transform
 
-    return videos
+    return result
 
 
 # ── Training / validation loops ───────────────────────────────────────────────
@@ -560,9 +636,9 @@ def main():
     # ── Logger ────────────────────────────────────────────────────────────
     logger = Logger(str(out_dir / "metrics.csv"))
 
-    # ── Fixed visualization indices (one per distinct sequence) ───────────
-    vis_val_idx   = select_vis_indices(val_loader.dataset,   n_seqs=4)  # 4 val scenes
-    vis_train_idx = select_vis_indices(train_loader.dataset, n_seqs=1)  # 1 train scene
+    # ── Fixed visualization indices (3 per split, plus 1 random each epoch) ─
+    vis_val_fixed   = select_vis_indices(val_loader.dataset,   n_rotate_true=1, n_rotate_false=2)
+    vis_train_fixed = select_vis_indices(train_loader.dataset, n_rotate_true=1, n_rotate_false=2)
 
     # ── Training loop ─────────────────────────────────────────────────────
     print(f"\nStarting training for {args.epochs} epochs ...\n")
@@ -608,15 +684,19 @@ def main():
             writer.add_scalar("val/mpjpe_body",  val_metrics["val_mpjpe_body"],  epoch + 1)
             writer.add_scalar("val/mpjpe_hand",  val_metrics["val_mpjpe_hand"],  epoch + 1)
 
-            # Visualization: 4 val scenes (model already eval) + 1 train scene
-            for i, vid in enumerate(
+            # Visualization: fixed 3 + 1 random per split → 4 scenes × 2 videos
+            vis_val_idx   = vis_val_fixed   + [sample_random_vis_index(val_loader.dataset)]
+            vis_train_idx = vis_train_fixed + [sample_random_vis_index(train_loader.dataset)]
+            for i, (vid_gt, vid_pred) in enumerate(
                 visualize_fixed_samples(model, val_loader.dataset, vis_val_idx, device, val_tf)
             ):
-                writer.add_video(f"val/scene_{i}", vid, global_step=epoch + 1, fps=4)
-            for i, vid in enumerate(
+                writer.add_video(f"val/scene_{i}/gt_pelvis",   vid_gt,   global_step=epoch + 1, fps=4)
+                writer.add_video(f"val/scene_{i}/pred_pelvis", vid_pred, global_step=epoch + 1, fps=4)
+            for i, (vid_gt, vid_pred) in enumerate(
                 visualize_fixed_samples(model, train_loader.dataset, vis_train_idx, device, val_tf)
             ):
-                writer.add_video(f"train/scene_{i}", vid, global_step=epoch + 1, fps=4)
+                writer.add_video(f"train/scene_{i}/gt_pelvis",   vid_gt,   global_step=epoch + 1, fps=4)
+                writer.add_video(f"train/scene_{i}/pred_pelvis", vid_pred, global_step=epoch + 1, fps=4)
             model.train()
 
         epoch_time = time.time() - t_epoch
