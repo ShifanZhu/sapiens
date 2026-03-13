@@ -1,6 +1,8 @@
 """SMPL-X joint constants for BEDLAM2."""
 
-NUM_JOINTS = 127
+# Full raw joint count in the BEDLAM2 label files
+_NUM_JOINTS_RAW = 127
+PELVIS_IDX = 0
 
 JOINT_NAMES = [
     # 0-21: Core body
@@ -9,7 +11,7 @@ JOINT_NAMES = [
     "neck", "left_collar", "right_collar", "head",
     "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
     "left_wrist", "right_wrist",
-    # 22-24: Jaw and eyes
+    # 22-24: Jaw and eyes (jaw=22 is excluded from active set)
     "jaw", "left_eye_smplhf", "right_eye_smplhf",
     # 25-39: Left hand
     "left_index1", "left_index2", "left_index3",
@@ -47,8 +49,24 @@ JOINT_NAMES = [
     "left_contour_4", "left_contour_3", "left_contour_2", "left_contour_1",
 ]
 
-# Kinematic skeleton for visualization (joint index pairs forming bones)
-SMPLX_SKELETON = (
+# Active joint subset: body (0-21) + eyes (23-24, jaw=22 excluded) +
+# hands (25-54) + non-face surface landmarks (60-75: toes, heels, fingertips).
+# Excludes: jaw=22, nose/eye/ear surface=55-59, dense face mesh=76-126.
+ACTIVE_JOINT_INDICES = (
+    list(range(0, 22))    # body (pelvis → right_wrist)
+    + [23, 24]            # eyes (left_eye_smplhf, right_eye_smplhf)
+    + list(range(25, 55)) # hands (left + right, 30 joints)
+    + list(range(60, 76)) # non-face surface (toes, heels, fingertips)
+)
+
+NUM_JOINTS = len(ACTIVE_JOINT_INDICES)  # 70
+
+# Map original index → new index (-1 if the joint is excluded)
+_ORIG_TO_NEW = {orig: new for new, orig in enumerate(ACTIVE_JOINT_INDICES)}
+
+# Kinematic skeleton for visualization, remapped to active joint indices.
+# Bones whose endpoints are not both active are automatically dropped.
+_SMPLX_BONES_RAW = (
     # Spine and head
     (0, 3), (3, 6), (6, 9), (9, 12), (12, 15),
     # Left leg
@@ -59,8 +77,8 @@ SMPLX_SKELETON = (
     (9, 13), (13, 16), (16, 18), (18, 20),
     # Right arm
     (9, 14), (14, 17), (17, 19), (19, 21),
-    # Jaw and eyes
-    (15, 22), (15, 23), (15, 24),
+    # Eyes (jaw=22 removed)
+    (15, 23), (15, 24),
     # Left hand
     (20, 25), (25, 26), (26, 27),
     (20, 28), (28, 29), (29, 30),
@@ -73,6 +91,11 @@ SMPLX_SKELETON = (
     (21, 46), (46, 47), (47, 48),
     (21, 49), (49, 50), (50, 51),
     (21, 52), (52, 53), (53, 54),
+)
+SMPLX_SKELETON = tuple(
+    (_ORIG_TO_NEW[a], _ORIG_TO_NEW[b])
+    for a, b in _SMPLX_BONES_RAW
+    if a in _ORIG_TO_NEW and b in _ORIG_TO_NEW
 )
 
 # Left-right joint pairs for horizontal flip augmentation (body + hands)

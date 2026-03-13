@@ -1,5 +1,7 @@
 from .constants import (
     NUM_JOINTS,
+    ACTIVE_JOINT_INDICES,
+    PELVIS_IDX,
     JOINT_NAMES,
     SMPLX_SKELETON,
     FLIP_PAIRS,
@@ -14,6 +16,9 @@ from .transforms import (
     RandomHorizontalFlip,
     RandomResizedCropRGBD,
     ColorJitter,
+    NoisyBBox,
+    CropPerson,
+    SubtractRoot,
     ToTensor,
     Compose,
     build_train_transform,

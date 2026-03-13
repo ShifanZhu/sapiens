@@ -1,7 +1,10 @@
 """SapiensPose3D: full model combining the 4-channel backbone and 3D head.
 
 Input  : (B, 4, H, W)  — RGB (channels 0-2) + Depth (channel 3)
-Output : (B, 127, 3)   — camera-space XYZ joints (X=fwd, Y=left, Z=up), metres
+Output : dict with:
+    joints:       (B, 127, 3)  — root-relative XYZ (metres)
+    pelvis_depth: (B, 1)       — pelvis forward distance (metres)
+    pelvis_uv:    (B, 2)       — pelvis (u, v) in crop pixel coordinates
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ class SapiensPose3D(nn.Module):
     def __init__(
         self,
         arch: str = "sapiens_0.3b",
-        img_size: tuple[int, int] = (384, 640),
+        img_size: tuple[int, int] = (640, 384),
         num_joints: int = 127,
         head_hidden: int = 2048,
         head_dropout: float = 0.0,
@@ -49,16 +52,17 @@ class SapiensPose3D(nn.Module):
             dropout=head_dropout,
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         """
         Args:
             x: ``(B, 4, H, W)`` — concatenated [RGB | depth] tensor.
 
         Returns:
-            ``(B, num_joints, 3)`` predicted camera-space joint coordinates.
+            Dict with ``joints`` (B, num_joints, 3), ``pelvis_depth`` (B, 1),
+            ``pelvis_uv`` (B, 2).
         """
         feat = self.backbone(x)   # (B, embed_dim, H/16, W/16)
-        return self.head(feat)    # (B, num_joints, 3)
+        return self.head(feat)
 
     def load_pretrained(self, ckpt_path: str, verbose: bool = True) -> None:
         """Load Sapiens RGB pretrained backbone weights.

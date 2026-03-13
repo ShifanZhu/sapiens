@@ -1,13 +1,19 @@
 """BEDLAM2 frame-level dataset for Sapiens-based pose estimation.
 
-Each sample is a single video frame paired with its depth map and the
-corresponding 3D SMPL-X joint annotations in camera space.
+Each sample is a single video frame for a single person, paired with its depth
+map and the corresponding 3D SMPL-X joint annotations in camera space.
+
+Supports multi-person sequences: the index is
+``(label_path, body_idx, frame_idx)`` so each person in each frame is a
+separate sample.  For single-person sequences ``body_idx`` is always 0.
 
 Sample dict (before transform):
     rgb:       np.ndarray (H, W, 3)  uint8   — original video frame
     depth:     np.ndarray (H, W)     float32 — depth in metres (None if unavailable)
-    joints:    np.ndarray (J, 3)     float32 — camera-space XYZ, J=127
+    joints:    np.ndarray (J, 3)     float32 — camera-space XYZ, J=NUM_JOINTS (active subset)
     intrinsic: np.ndarray (3, 3)     float32 — camera intrinsic matrix
+    bbox:      np.ndarray (4,)       float32 — (x1, y1, x2, y2) person box
+    body_idx:  int
     folder_name: str
     seq_name:    str
     frame_idx:   int                 — index within the downsampled (6 fps) sequence
@@ -15,13 +21,14 @@ Sample dict (before transform):
 After applying ToTensor (or a Compose that ends with it):
     rgb:       Tensor (3, H, W)      float32 — ImageNet-normalised
     depth:     Tensor (1, H, W)      float32 — clipped & normalised to [0, 1]
-    joints:    Tensor (J, 3)         float32 — unchanged
+    joints:    Tensor (J, 3)         float32 — root-relative (after SubtractRoot)
     intrinsic: Tensor (3, 3)         float32
 """
 
 from __future__ import annotations
 
 import os
+import random
 from collections import OrderedDict
 from pathlib import Path
 
@@ -30,13 +37,14 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from .constants import FRAME_STRIDE
+from .constants import FRAME_STRIDE, ACTIVE_JOINT_INDICES
 
-
+# Minimum bbox dimension (pixels) — samples below this are skipped via retry
+_MIN_BBOX_PX = 32
 
 
 class BedlamFrameDataset(Dataset):
-    """One sample = one frame from one BEDLAM2 sequence.
+    """One sample = one person in one frame from one BEDLAM2 sequence.
 
     Args:
         seq_paths:      List of relative paths like ``"folder/seq.npz"``
@@ -63,27 +71,27 @@ class BedlamFrameDataset(Dataset):
         self.frame_stride = frame_stride
 
         # Per-worker label cache (populated lazily; each worker fills its own copy).
-        # Stores only small scalar metadata + open mmap NPZ handle for joints_cam.
         self._label_cache: dict[str, dict] = {}
         # Per-worker mmap cache for NPY depth files.
-        # np.load(mmap_mode='r') returns a view; the OS manages paging — no size limit needed.
         self._depth_mmap: dict[str, np.ndarray | None] = {}
         # LRU fallback cache for legacy NPZ files (bounded to avoid OOM).
         self._depth_cache: OrderedDict[str, np.ndarray | None] = OrderedDict()
         self._depth_cache_maxsize = 3
 
-        # Build flat index: list of (label_abs_path, frame_idx).
-        # Only read n_frames here; full metadata is cached lazily per worker.
-        self.index: list[tuple[str, int]] = []
+        # Build flat index: list of (label_abs_path, body_idx, frame_idx).
+        self.index: list[tuple[str, int, int]] = []
         for seq_rel in seq_paths:
             label_path = os.path.join(data_root, "data", "label", seq_rel)
             try:
                 meta = np.load(label_path, allow_pickle=True)
                 n_frames = int(meta["n_frames"])
+                joints_cam = meta["joints_cam"]  # (n_body, n_frames, 127, 3)
+                n_body = joints_cam.shape[0]
             except Exception as e:
                 raise RuntimeError(f"Failed to read label {label_path}: {e}") from e
-            for frame_idx in range(n_frames):
-                self.index.append((label_path, frame_idx))
+            for body_idx in range(n_body):
+                for frame_idx in range(n_frames):
+                    self.index.append((label_path, body_idx, frame_idx))
 
     # ------------------------------------------------------------------
 
@@ -91,62 +99,139 @@ class BedlamFrameDataset(Dataset):
         return len(self.index)
 
     def __getitem__(self, idx: int) -> dict:
-        label_path, frame_idx = self.index[idx]
+        # Retry loop for tiny bboxes (guarantees constant batch size)
+        max_retries = 10
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                idx = random.randint(0, len(self.index) - 1)
 
-        # Lazily populate label cache per worker (each worker fills its own copy)
-        if label_path not in self._label_cache:
-            with np.load(label_path, allow_pickle=True) as meta:
-                self._label_cache[label_path] = {
-                    "folder_name":      str(meta["folder_name"]),
-                    "seq_name":         str(meta["seq_name"]),
-                    "intrinsic_matrix": meta["intrinsic_matrix"].astype(np.float32),
-                    "joints_cam":       meta["joints_cam"][0].astype(np.float32),  # (n_frames, 127, 3)
-                }
-        cached = self._label_cache[label_path]
+            label_path, body_idx, frame_idx = self.index[idx]
 
-        folder_name = cached["folder_name"]
-        seq_name    = cached["seq_name"]
-        intrinsic   = cached["intrinsic_matrix"]
+            # Lazily populate label cache per worker
+            if label_path not in self._label_cache:
+                with np.load(label_path, allow_pickle=True) as meta:
+                    cache_entry = {
+                        "folder_name":      str(meta["folder_name"]),
+                        "seq_name":         str(meta["seq_name"]),
+                        "intrinsic_matrix": meta["intrinsic_matrix"].astype(np.float32),
+                        "joints_cam":       meta["joints_cam"].astype(np.float32),
+                    }
+                    # Cache joints_2d if available (multi-person bbox computation)
+                    if "joints_2d" in meta:
+                        cache_entry["joints_2d"] = meta["joints_2d"].astype(np.float32)
+                    else:
+                        cache_entry["joints_2d"] = None
+                    self._label_cache[label_path] = cache_entry
+            cached = self._label_cache[label_path]
 
-        joints = cached["joints_cam"][frame_idx]  # (127, 3)
+            folder_name = cached["folder_name"]
+            seq_name    = cached["seq_name"]
+            intrinsic   = cached["intrinsic_matrix"]
 
-        # --- RGB ----------------------------------------------------------
-        rgb = self._read_frame(folder_name, seq_name, frame_idx, label_path)
+            joints = cached["joints_cam"][body_idx, frame_idx]  # (127, 3) raw
 
-        # --- Depth --------------------------------------------------------
-        # Prefer pre-converted NPY (mmappable, no decompression) over NPZ.
-        npy_path = os.path.join(
-            self.data_root, "data", "depth", "npy",
-            folder_name, f"{seq_name}.npy",
-        )
-        npz_path = os.path.join(
-            self.data_root, "data", "depth", "npz",
-            folder_name, f"{seq_name}.npz",
-        )
-        depth = self._read_depth(npy_path, npz_path, frame_idx, label_path)
+            # --- Bbox from joints_2d (all keypoints, visible + invisible) ---
+            bbox = self._compute_bbox(cached, body_idx, frame_idx)
 
-        # NOTE:
-        # RGB is loaded from pre-extracted JPEGs in data/frames, which are
-        # already stored in the upright orientation. No runtime rotation.
+            # Check minimum bbox size
+            if bbox is not None:
+                bw = bbox[2] - bbox[0]
+                bh = bbox[3] - bbox[1]
+                if bw < _MIN_BBOX_PX or bh < _MIN_BBOX_PX:
+                    continue  # retry with a different sample
 
-        sample = {
-            "rgb":         rgb,
-            "depth":       depth,
-            "joints":      joints,
-            "intrinsic":   intrinsic,
-            "folder_name": folder_name,
-            "seq_name":    seq_name,
-            "frame_idx":   frame_idx,
-        }
+            # --- RGB --------------------------------------------------------
+            rgb = self._read_frame(folder_name, seq_name, frame_idx, label_path)
 
-        if self.transform is not None:
-            sample = self.transform(sample)
+            # --- OOB filter: skip if >70% of joints are outside the image --
+            if cached["joints_2d"] is not None:
+                H_raw, W_raw = rgb.shape[:2]
+                kpts = cached["joints_2d"][body_idx, frame_idx]  # (127, 2)
+                x_oob = (kpts[:, 0] < 0) | (kpts[:, 0] >= W_raw)
+                y_oob = (kpts[:, 1] < 0) | (kpts[:, 1] >= H_raw)
+                n_oob = int(np.sum(x_oob | y_oob))
+                if n_oob / kpts.shape[0] > 0.70:
+                    continue  # retry with a different sample
 
-        return sample
+            # Reduce to active joint subset (body + eyes + hands + non-face surface)
+            joints = joints[ACTIVE_JOINT_INDICES]  # (NUM_JOINTS, 3)
+
+            # --- Depth ------------------------------------------------------
+            npy_path = os.path.join(
+                self.data_root, "data", "depth", "npy",
+                folder_name, f"{seq_name}.npy",
+            )
+            npz_path = os.path.join(
+                self.data_root, "data", "depth", "npz",
+                folder_name, f"{seq_name}.npz",
+            )
+            depth = self._read_depth(npy_path, npz_path, frame_idx, label_path)
+
+            # Clamp bbox to actual image dimensions
+            H, W = rgb.shape[:2]
+            if bbox is not None:
+                bbox[0] = max(0.0, min(bbox[0], float(W)))
+                bbox[1] = max(0.0, min(bbox[1], float(H)))
+                bbox[2] = max(0.0, min(bbox[2], float(W)))
+                bbox[3] = max(0.0, min(bbox[3], float(H)))
+
+            sample = {
+                "rgb":         rgb,
+                "depth":       depth,
+                "joints":      joints,
+                "intrinsic":   intrinsic,
+                "folder_name": folder_name,
+                "seq_name":    seq_name,
+                "frame_idx":   frame_idx,
+                "body_idx":    body_idx,
+            }
+            if bbox is not None:
+                sample["bbox"] = bbox
+
+            if self.transform is not None:
+                sample = self.transform(sample)
+
+            return sample
+
+        # All retries exhausted — return last attempt anyway
+        return sample  # type: ignore[possibly-undefined]
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _compute_bbox(
+        self, cached: dict, body_idx: int, frame_idx: int
+    ) -> np.ndarray | None:
+        """Compute person bounding box from 2D joint projections.
+
+        Uses ALL keypoints (visible and invisible) to mimic a full-body
+        detector.  Returns ``(x1, y1, x2, y2)`` float32 array, or None
+        if no joints_2d data is available.
+        """
+        joints_2d = cached["joints_2d"]
+        if joints_2d is None:
+            return None
+
+        # joints_2d shape: (n_body, n_frames, 127, 2)
+        kpts = joints_2d[body_idx, frame_idx]  # (127, 2)
+
+        # Use all keypoints (no visibility filtering)
+        x_min = kpts[:, 0].min()
+        y_min = kpts[:, 1].min()
+        x_max = kpts[:, 0].max()
+        y_max = kpts[:, 1].max()
+
+        # Add 10% padding around the tight bbox
+        w = x_max - x_min
+        h = y_max - y_min
+        pad_x = w * 0.1
+        pad_y = h * 0.1
+
+        return np.array(
+            [x_min - pad_x, y_min - pad_y, x_max + pad_x, y_max + pad_y],
+            dtype=np.float32,
+        )
 
     def _read_frame(
         self,
@@ -155,14 +240,7 @@ class BedlamFrameDataset(Dataset):
         frame_idx: int,
         label_path: str,
     ) -> np.ndarray:
-        """Return (H, W, 3) uint8 RGB frame.
-
-        JPG-only mode: reads pre-extracted JPEG from ``data/frames`` and raises
-        a clear error if the frame is missing.
-
-        Pre-extracted JPEG layout:
-            data/frames/<folder>/<seq_name>/<frame_idx:05d>.jpg
-        """
+        """Return (H, W, 3) uint8 RGB frame."""
         jpeg_path = (
             Path(self.data_root)
             / "data"
@@ -186,24 +264,19 @@ class BedlamFrameDataset(Dataset):
     def _read_depth(
         self, npy_path: str, npz_path: str, frame_idx: int, label_path: str
     ) -> np.ndarray | None:
-        """Return a single (H, W) float32 depth frame.
-
-        Fast path: memory-map the pre-converted NPY file — the OS pages in only
-        the frame requested, with zero decompression cost.
-        Slow fallback: load from the original compressed NPZ with an LRU cache.
-        """
-        # ── Fast path: NPY mmap ───────────────────────────────────────────────
+        """Return a single (H, W) float32 depth frame."""
+        # ── Fast path: NPY mmap ──────────────────────────────────────────
         if npy_path not in self._depth_mmap:
             if os.path.exists(npy_path):
                 self._depth_mmap[npy_path] = np.load(npy_path, mmap_mode="r")
             else:
-                self._depth_mmap[npy_path] = None  # not available
+                self._depth_mmap[npy_path] = None
 
         arr = self._depth_mmap[npy_path]
         if arr is not None:
             return arr[frame_idx].astype(np.float32)
 
-        # ── Slow fallback: NPZ with LRU cache ────────────────────────────────
+        # ── Slow fallback: NPZ with LRU cache ───────────────────────────
         if npz_path not in self._depth_cache:
             if not os.path.exists(npz_path):
                 if self.depth_required:

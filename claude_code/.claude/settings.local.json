@@ -4,7 +4,14 @@
       "Bash(journalctl --since \"3 hours ago\" 2>/dev/null | grep -iE \"kill|oom|out of memory|python|train\" | tail -30)",
       "Read(//sys/devices/pci0000:00/0000:00:06.0/0000:02:00.0/**)",
       "Bash(nvme list:*)",
-      "Bash(journalctl -b 0 --no-pager -k 2>/dev/null | grep -iE \"nvidia|gpu|drm|display|thermal|temperature|overheat|watchdog|nmi|panic|reboot|shutdown\" | head -30)"
+      "Bash(journalctl -b 0 --no-pager -k 2>/dev/null | grep -iE \"nvidia|gpu|drm|display|thermal|temperature|overheat|watchdog|nmi|panic|reboot|shutdown\" | head -30)",
+      "Bash(git reset:*)",
+      "Bash(echo \"runs/vis_depth_joints/\" >> .gitignore && git add .gitignore)",
+      "Bash(git commit:*)",
+      "WebSearch",
+      "Read(//home/hang/repos_local/MMC/BEDLAM2Datatest/data/**)",
+      "Bash(python3 << 'EOFPYTHON'\nimport numpy as np\nnpz_file = \"/home/hang/repos_local/MMC/BEDLAM2Datatest/data/depth/npz/20240808_1_250_ai1105_vcam/seq_000005.npz\"\ntry:\n    data = np.load\\(npz_file\\)\n    print\\(\"NPZ keys:\", list\\(data.keys\\(\\)\\)\\)\n    for key in data.keys\\(\\):\n        print\\(f\"  {key}: shape={data[key].shape}, dtype={data[key].dtype}\"\\)\nexcept Exception as e:\n    print\\(f\"Error: {e}\"\\)\nEOFPYTHON)",
+      "Bash(conda run:*)"
     ]
   }
 }
