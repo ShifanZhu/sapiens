@@ -22,8 +22,8 @@ Synthetic dataset of humans in diverse scenes with ground-truth annotations.
 
 - ~1800 sequences, 24-96 frames each at 30fps (downsampled to 6fps, stride=5)
 - Each sequence NPZ label contains:
-  - `joints_cam`: `(n_body, n_frames, 127, 3)` — 3D joints in camera space (metres)
-  - `joints_2d`: `(n_body, n_frames, 127, 2)` — projected 2D positions (pixels)
+  - `joints_cam`: `(n_body, n_frames, 127, 3)` — 3D joints in camera space (metres); 70-joint active subset selected at load time
+  - `joints_2d`: `(n_body, n_frames, 127, 2)` — projected 2D positions (pixels); all 127 used for OOB visibility filter
   - `intrinsic_matrix`: `(3, 3)` — camera calibration
   - `folder_name`, `seq_name`, `n_frames`, `rotate_flag`
 
@@ -55,11 +55,28 @@ This is consistent with rendering engines (Blender/Unreal) that output Z-buffer 
 - Conversion: `Z_forward = Z_euclidean * cos(angle_from_optical_axis)`
 - At inference time, ensure depth input matches BEDLAM2 convention (forward distance)
 
+### Active Joint Subset
+
+The raw BEDLAM2 labels contain 127 SMPL-X joints. We use only a **70-joint active subset** that excludes the dense face mesh:
+
+| Group | Original indices | Active indices | Count |
+|-------|-----------------|----------------|-------|
+| Body (pelvis → wrists) | 0-21 | 0-21 | 22 |
+| Eyes (left_eye_smplhf, right_eye_smplhf) | 23-24 | 22-23 | 2 |
+| Hands (left + right) | 25-54 | 24-53 | 30 |
+| Non-face surface (toes, heels, fingertips) | 60-75 | 54-69 | 16 |
+
+**Excluded** (57 joints): jaw (22), nose/eye/ear surface (55-59), eyebrows (76-85), nose mesh (86-94), eye mesh (95-106), mouth (107-118), lips (119-126).
+
+The active joint subset is defined in `constants.ACTIVE_JOINT_INDICES` and applied in `dataset.py` at load time. The model head outputs 70 joints.
+
 ### Dataset Indexing (`dataset.py`)
 
 The flat index is `(label_path, body_idx, frame_idx)`. For a multi-person sequence with 3 bodies and 50 frames, that's 150 samples. Each sample is one person in one frame.
 
-Samples with tiny bounding boxes (< 32px) are retried with a random different index.
+**Filtering** — a sample is skipped (retried with a random index) if:
+1. Bounding box is smaller than 32×32 px.
+2. More than **70%** of the 127 raw joints have a 2D projection outside the image (x < 0, x ≥ W, y < 0, or y ≥ H). This removes frames where the person is mostly off-screen.
 
 ### Splits (`splits.py`)
 
@@ -129,7 +146,7 @@ This avoids the need for aggressive loss down-weighting. All lambdas default to 
 |-------|--------|-------|
 | `rgb` | `(H,W,3) uint8` | `(3,H,W) float32`, `/255`, ImageNet mean/std normalized |
 | `depth` | `(H,W) float32` metres | `(1,H,W) float32`, clipped to [0, 20m], `/20` → **[0, 1] unitless** |
-| `joints` | `(127,3) float32` metres | `(127,3) float32` tensor, root-relative **metres** |
+| `joints` | `(70,3) float32` metres | `(70,3) float32` tensor, root-relative **metres** |
 | `intrinsic` | `(3,3) float32` | `(3,3) float32` tensor |
 | `pelvis_depth` | `(1,) float32` metres | `(1,) float32` tensor, **raw metres** (not normalized) |
 | `pelvis_uv` | `(2,) float32` normalized | `(2,) float32` tensor, **[-1, 1]** (0 = crop center) |
@@ -150,7 +167,7 @@ Constructed by: `x = torch.cat([rgb, depth], dim=1)`
 
 | Output | Shape | Unit |
 |--------|-------|------|
-| `joints` | `(B, 127, 3)` | Root-relative, **metres** |
+| `joints` | `(B, 70, 3)` | Root-relative, **metres** (active joint subset) |
 | `pelvis_depth` | `(B, 1)` | Forward distance, **raw metres** |
 | `pelvis_uv` | `(B, 2)` | Pelvis position, **normalized [-1, 1]** (0 = crop center) |
 
@@ -180,7 +197,7 @@ Shared-trunk MLP with 3 task-specific output branches:
 (B, embed_dim, 40, 24)
   → AdaptiveAvgPool2d(1)                    → (B, embed_dim)
   → Linear(embed_dim, 2048) + LN + GELU + Dropout   [shared trunk]
-  ├→ Linear(2048, 127*3) → reshape           → joints      (B, 127, 3)
+  ├→ Linear(2048, 70*3) → reshape            → joints      (B, 70, 3)
   ├→ Linear(2048, 1)                         → pelvis_depth (B, 1)
   └→ Linear(2048, 2)                         → pelvis_uv    (B, 2)
 ```
@@ -233,9 +250,9 @@ All three targets are in similar numeric ranges (metres ~1-5, normalized UV ~±0
 ### Metrics
 
 MPJPE (Mean Per-Joint Position Error) in mm:
-- **Body** (joints 0:22): core kinematic joints — used for best model selection and early stopping
-- **Hand** (joints 25:55): left + right hand joints
-- **All** (joints 0:127): all SMPL-X joints
+- **Body** (active indices 0:22): core kinematic joints — used for best model selection and early stopping
+- **Hand** (active indices 24:54): left + right hand joints (was 25:55 in raw 127-joint space)
+- **All** (active indices 0:70): all active joints
 
 ### Mixed Precision
 
@@ -309,7 +326,7 @@ The model predicts root-relative poses. To place each person in the scene:
 ### Step 5: Absolute Skeleton
 
 ```python
-joints_abs = pred_rel + pelvis_abs[np.newaxis, :]  # (127, 3)
+joints_abs = pred_rel + pelvis_abs[np.newaxis, :]  # (70, 3)
 ```
 
 ### Step 6: Visualize

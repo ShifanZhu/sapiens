@@ -1,5 +1,6 @@
 from .constants import (
     NUM_JOINTS,
+    ACTIVE_JOINT_INDICES,
     PELVIS_IDX,
     JOINT_NAMES,
     SMPLX_SKELETON,

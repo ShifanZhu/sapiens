@@ -10,7 +10,7 @@ separate sample.  For single-person sequences ``body_idx`` is always 0.
 Sample dict (before transform):
     rgb:       np.ndarray (H, W, 3)  uint8   — original video frame
     depth:     np.ndarray (H, W)     float32 — depth in metres (None if unavailable)
-    joints:    np.ndarray (J, 3)     float32 — camera-space XYZ, J=127
+    joints:    np.ndarray (J, 3)     float32 — camera-space XYZ, J=NUM_JOINTS (active subset)
     intrinsic: np.ndarray (3, 3)     float32 — camera intrinsic matrix
     bbox:      np.ndarray (4,)       float32 — (x1, y1, x2, y2) person box
     body_idx:  int
@@ -37,7 +37,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from .constants import FRAME_STRIDE
+from .constants import FRAME_STRIDE, ACTIVE_JOINT_INDICES
 
 # Minimum bbox dimension (pixels) — samples below this are skipped via retry
 _MIN_BBOX_PX = 32
@@ -128,7 +128,7 @@ class BedlamFrameDataset(Dataset):
             seq_name    = cached["seq_name"]
             intrinsic   = cached["intrinsic_matrix"]
 
-            joints = cached["joints_cam"][body_idx, frame_idx]  # (127, 3)
+            joints = cached["joints_cam"][body_idx, frame_idx]  # (127, 3) raw
 
             # --- Bbox from joints_2d (all keypoints, visible + invisible) ---
             bbox = self._compute_bbox(cached, body_idx, frame_idx)
@@ -142,6 +142,19 @@ class BedlamFrameDataset(Dataset):
 
             # --- RGB --------------------------------------------------------
             rgb = self._read_frame(folder_name, seq_name, frame_idx, label_path)
+
+            # --- OOB filter: skip if >70% of joints are outside the image --
+            if cached["joints_2d"] is not None:
+                H_raw, W_raw = rgb.shape[:2]
+                kpts = cached["joints_2d"][body_idx, frame_idx]  # (127, 2)
+                x_oob = (kpts[:, 0] < 0) | (kpts[:, 0] >= W_raw)
+                y_oob = (kpts[:, 1] < 0) | (kpts[:, 1] >= H_raw)
+                n_oob = int(np.sum(x_oob | y_oob))
+                if n_oob / kpts.shape[0] > 0.70:
+                    continue  # retry with a different sample
+
+            # Reduce to active joint subset (body + eyes + hands + non-face surface)
+            joints = joints[ACTIVE_JOINT_INDICES]  # (NUM_JOINTS, 3)
 
             # --- Depth ------------------------------------------------------
             npy_path = os.path.join(
