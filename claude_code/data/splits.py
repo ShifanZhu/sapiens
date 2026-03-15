@@ -15,6 +15,7 @@ def get_seq_paths(
     skip_missing_body: bool = True,
     depth_required: bool = True,
     mp4_required: bool = True,
+    frames_root: str | None = None,
 ) -> list[str]:
     """Return a list of relative sequence paths that pass all filters.
 
@@ -47,6 +48,10 @@ def get_seq_paths(
             if mp4_required and "no_mp4=True" in conditions:
                 continue
             folder, seq = name.strip().split("/")
+            if frames_root is not None:
+                frames_dir = Path(frames_root) / folder / seq
+                if not frames_dir.is_dir():
+                    continue
             seq_paths.append(f"{folder}/{seq}.npz")
     return seq_paths
 

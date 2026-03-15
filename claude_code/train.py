@@ -50,9 +50,9 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train SapiensPose3D on BEDLAM2")
 
     # paths
-    p.add_argument("--data-root",   default="/home/hang/repos_local/MMC/BEDLAM2Datatest")
-    p.add_argument("--pretrain",    default="checkpoints/sapiens_0.3b_epoch_1600_clean.pth",
-                   help="Sapiens pretrain checkpoint (leave empty to train from scratch)")
+    p.add_argument("--data-root",   required=True)
+    p.add_argument("--pretrain",    required=True,
+                   help="Path to Sapiens pretrain checkpoint")
     p.add_argument("--output-dir",  default="runs/exp001")
     p.add_argument("--resume",      default="", help="Resume from this checkpoint")
 
