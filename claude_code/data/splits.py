@@ -17,7 +17,6 @@ def get_seq_paths(
     depth_required: bool = True,
     mp4_required: bool = True,
     frames_root: str | None = None,
-    frames_root: str | None = None,
 ) -> list[str]:
     """Return a list of relative sequence paths that pass all filters.
 
