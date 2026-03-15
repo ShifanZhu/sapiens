@@ -731,9 +731,15 @@ def main():
     # ── Logger ────────────────────────────────────────────────────────────
     logger = Logger(str(out_dir / "metrics.csv"))
 
-    # ── Fixed visualization indices (3 per split, plus 1 random each epoch) ─
-    vis_val_fixed   = select_vis_indices(val_loader.dataset)
-    vis_train_fixed = select_vis_indices(train_loader.dataset)
+    # ── Fixed visualization indices (3 per split + 1 fixed random) ─────────
+    # All 4 indices are fixed for the entire run so the main-process dataset's
+    # _label_cache and _depth_mmap caches stay bounded (they are never evicted
+    # from the main process object; picking a new random sequence each epoch
+    # would cause both caches to grow by 2 entries per epoch indefinitely).
+    vis_val_fixed   = select_vis_indices(val_loader.dataset)   \
+                      + [sample_random_vis_index(val_loader.dataset)]
+    vis_train_fixed = select_vis_indices(train_loader.dataset) \
+                      + [sample_random_vis_index(train_loader.dataset)]
 
     # ── Training loop ─────────────────────────────────────────────────────
     print(f"\nStarting training for {args.epochs} epochs ...\n")
@@ -779,19 +785,17 @@ def main():
             writer.add_scalar("val/mpjpe_body",  val_metrics["val_mpjpe_body"],  epoch + 1)
             writer.add_scalar("val/mpjpe_hand",  val_metrics["val_mpjpe_hand"],  epoch + 1)
 
-            # Visualization: fixed 3 + 1 random per split → 4 scenes × 2 videos
-            # Scene labels: 0=rotate_true, 1=rotate_false, 2=multi_person, 3=random
+            # Visualization: fixed 4 scenes per split (3 structured + 1 fixed random)
+            # All indices are pre-selected at startup to keep main-process caches bounded.
             _scene_tags = ["scene_0", "scene_1", "scene_2", "scene_3_random"]
-            vis_val_idx   = vis_val_fixed   + [sample_random_vis_index(val_loader.dataset)]
-            vis_train_idx = vis_train_fixed + [sample_random_vis_index(train_loader.dataset)]
             for i, (vid_gt, vid_pred) in enumerate(
-                visualize_fixed_samples(model, val_loader.dataset, vis_val_idx, device, val_tf)
+                visualize_fixed_samples(model, val_loader.dataset, vis_val_fixed, device, val_tf)
             ):
                 tag = _scene_tags[i]
                 writer.add_video(f"val/{tag}/gt_pelvis",   vid_gt,   global_step=epoch + 1, fps=4)
                 writer.add_video(f"val/{tag}/pred_pelvis", vid_pred, global_step=epoch + 1, fps=4)
             for i, (vid_gt, vid_pred) in enumerate(
-                visualize_fixed_samples(model, train_loader.dataset, vis_train_idx, device, val_tf)
+                visualize_fixed_samples(model, train_loader.dataset, vis_train_fixed, device, val_tf)
             ):
                 tag = _scene_tags[i]
                 writer.add_video(f"train/{tag}/gt_pelvis",   vid_gt,   global_step=epoch + 1, fps=4)
