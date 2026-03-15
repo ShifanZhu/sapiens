@@ -393,14 +393,15 @@ def visualize_fixed_samples(
                 x = torch.cat([rgb_t.unsqueeze(0), depth_t.unsqueeze(0)], dim=1).to(device)
                 with torch.no_grad():
                     out = model(x)
-                    pred    = out["joints"]        # (1, NUM_JOINTS, 3)
-                    p_depth = out["pelvis_depth"]  # (1, 1)
-                    p_uv    = out["pelvis_uv"]     # (1, 2)
+                    pred_joints_np = out["joints"][0].float().cpu().numpy()
+                    pd_val = out["pelvis_depth"][0, 0].float().cpu().item()
+                    pu_val = out["pelvis_uv"][0].float().cpu().numpy()
+                del x, out
 
                 rgb_u8 = ((rgb_t * _RGB_STD_T + _RGB_MEAN_T).clamp(0, 1) * 255).byte().numpy()
                 K_np   = K_t.numpy() if isinstance(K_t, torch.Tensor) else K_t
                 rgb_frames.append(rgb_u8)
-                pred_frames.append(pred[0].float().cpu().numpy())
+                pred_frames.append(pred_joints_np)
                 K_frames.append(K_np)
 
                 # Original (uncropped) RGB and K for pred_pelvis video
@@ -440,14 +441,13 @@ def visualize_fixed_samples(
                             out_bk["pelvis_uv"][0].float().cpu().numpy(),
                             K_bk,
                         )
+                        del x_bk, out_bk
                         frame_bodies.append((joints_bk, pelvis_bk, _PERSON_COLORS[bk % len(_PERSON_COLORS)]))
                     multi_pred_per_frame.append(frame_bodies)
                 else:
-                    pd_val = p_depth[0, 0].float().cpu().item()
-                    pu_val = p_uv[0].float().cpu().numpy()
                     pelvis_pred = recover_pelvis_from_pred(pd_val, pu_val, K_np)
                     multi_pred_per_frame.append([
-                        (pred[0].float().cpu().numpy(), pelvis_pred, _PERSON_COLORS[0])
+                        (pred_joints_np, pelvis_pred, _PERSON_COLORS[0])
                     ])
 
                 i += 1
@@ -495,7 +495,7 @@ def train_one_epoch(
     n_batches = 0
 
     total = args.max_batches if args.max_batches > 0 else len(loader)
-    pbar = tqdm(loader, total=total, desc=f"Epoch {epoch} [train]", leave=True)
+    pbar = tqdm(loader, total=total, desc=f"Epoch {epoch} [train]", leave=True, dynamic_ncols=True)
 
     for i, batch in enumerate(pbar):
         rgb          = batch["rgb"].to(device, non_blocking=True)           # (B, 3, H, W)
@@ -533,6 +533,7 @@ def train_one_epoch(
             total_loss_depth += l_depth.item()
             total_loss_uv    += l_uv.item()
             total_mpjpe_body += mpjpe(pred_joints.float(), joints, BODY_IDX).item()
+        del x, out, pred_joints, pred_depth, pred_uv, l_pose, l_depth, l_uv, loss
         n_batches += 1
 
         pbar.set_postfix(loss=f"{total_loss/n_batches:.4f}",
@@ -571,7 +572,7 @@ def validate(
     n_batches   = 0
 
     total = args.max_batches if args.max_batches > 0 else len(loader)
-    pbar = tqdm(loader, total=total, desc="         [val] ", leave=True)
+    pbar = tqdm(loader, total=total, desc="         [val] ", leave=True, dynamic_ncols=True)
 
     for batch in pbar:
         rgb      = batch["rgb"].to(device, non_blocking=True)
@@ -588,7 +589,8 @@ def validate(
             pred_depth  = out["pelvis_depth"]
             pred_uv     = out["pelvis_uv"]
 
-        l_pose  = pose_loss(pred_joints.float(), joints).item()
+        pred_joints_f = pred_joints.float()
+        l_pose  = pose_loss(pred_joints_f, joints).item()
         l_depth = nn.functional.smooth_l1_loss(pred_depth.float(), gt_depth, beta=0.05).item()
         l_uv    = nn.functional.smooth_l1_loss(pred_uv.float(), gt_uv, beta=0.05).item()
 
@@ -596,9 +598,10 @@ def validate(
         total_loss_pose  += l_pose
         total_loss_depth += l_depth
         total_loss_uv    += l_uv
-        sum_all    += mpjpe(pred_joints.float(), joints).item()
-        sum_body   += mpjpe(pred_joints.float(), joints, BODY_IDX).item()
-        sum_hand   += mpjpe(pred_joints.float(), joints, HAND_IDX).item()
+        sum_all    += mpjpe(pred_joints_f, joints).item()
+        sum_body   += mpjpe(pred_joints_f, joints, BODY_IDX).item()
+        sum_hand   += mpjpe(pred_joints_f, joints, HAND_IDX).item()
+        del x, out, pred_joints, pred_joints_f, pred_depth, pred_uv
         n_batches  += 1
 
         pbar.set_postfix(mpjpe_body=f"{sum_body/n_batches:.1f}mm",
@@ -793,6 +796,7 @@ def main():
                 tag = _scene_tags[i]
                 writer.add_video(f"train/{tag}/gt_pelvis",   vid_gt,   global_step=epoch + 1, fps=4)
                 writer.add_video(f"train/{tag}/pred_pelvis", vid_pred, global_step=epoch + 1, fps=4)
+            torch.cuda.empty_cache()
             model.train()
 
         epoch_time = time.time() - t_epoch

@@ -5,6 +5,7 @@ data leakage between sets.  Sequences from the same folder can appear in
 different splits (folder-level split is a future option if needed).
 """
 
+import os
 import random
 from pathlib import Path
 
@@ -15,6 +16,7 @@ def get_seq_paths(
     skip_missing_body: bool = True,
     depth_required: bool = True,
     mp4_required: bool = True,
+    frames_root: str | None = None,
     frames_root: str | None = None,
 ) -> list[str]:
     """Return a list of relative sequence paths that pass all filters.
@@ -28,6 +30,8 @@ def get_seq_paths(
         skip_missing_body: Skip sequences where a body annotation is absent.
         depth_required: Skip sequences without a depth npz file.
         mp4_required: Skip sequences without an mp4 video file.
+        frames_root: If given (path to ``data/frames/``), skip sequences whose
+            frame directory does not exist under this root.
 
     Returns:
         Filtered list of ``"folder/seq.npz"`` strings.

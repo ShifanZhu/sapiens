@@ -4,33 +4,40 @@ Visualization runs every epoch after validation and logs pose-overlay videos to 
 
 ## Sequence Selection
 
-**4 val sequences + 4 train sequences** are fixed at startup and reused every epoch.
+**4 val sequences + 4 train sequences** are used each epoch.
 
-Within each split, the 4 sequences are chosen as:
-- 1 sequence with `rotate_flag=True` (portrait video, rotated CCW 90° at extraction)
-- 2 sequences with `rotate_flag=False` (landscape / already-upright video)
-- 1 sequence drawn **randomly** from the full split each epoch (any `rotate_flag`)
+| Scene tag | Type | Description |
+|---|---|---|
+| `scene_0` | fixed | `rotate_flag=True` (portrait video, rotated CCW 90° at extraction) |
+| `scene_1` | fixed | `rotate_flag=False` (landscape / already-upright video) |
+| `scene_2` | fixed | Multi-person sequence (`n_body > 1`) |
+| `scene_3_random` | random | Drawn randomly from the full split each epoch (any type) |
 
-The fixed 3 ensure stable comparisons across epochs. The random slot provides variety — showing the model on unseen sequences each epoch.
+The 3 fixed scenes ensure stable comparisons across epochs. The random slot provides variety.
 
-`rotate_flag` is read from each sequence's label NPZ at startup for the fixed slots.
+`rotate_flag` and `n_body` are read from each sequence's label NPZ at startup for the fixed slots.
 
 ## Two Videos Per Sequence
 
-Each sequence produces **two side-by-side TensorBoard videos** per epoch:
+Each sequence produces **two TensorBoard videos** per epoch:
 
-| Tag suffix | Pelvis source | What it shows |
-|---|---|---|
-| `gt_pelvis` | GT `pelvis_abs` from dataset labels | Quality of predicted **relative** joint layout |
-| `pred_pelvis` | Recovered from model's `pelvis_depth` + `pelvis_uv` | Full end-to-end **absolute** pose quality |
+| Tag suffix | People shown | Joints | Image | K used | What it shows |
+|---|---|---|---|---|---|
+| `gt_pelvis` | Selected body only | pred relative + GT pelvis | **Crop** (384×640) | Crop K | Quality of predicted **relative** joint layout |
+| `pred_pelvis` | **All people in scene** | pred relative + pred pelvis per person | **Original uncropped image** | Original K | Full end-to-end **absolute** pose quality |
+
+For `scene_2` (multi-person), `pred_pelvis` runs a separate forward pass for every person in the scene and overlays all skeletons on the original image, each in a distinct color (`_PERSON_COLORS`: green, orange, blue, magenta, cyan, cycling if n_body > 5).
 
 TensorBoard tags:
-- `val/scene_0/gt_pelvis`, `val/scene_0/pred_pelvis`, ..., `val/scene_3/...`
-- `train/scene_0/gt_pelvis`, `train/scene_0/pred_pelvis`, ..., `train/scene_3/...`
+- `val/scene_0/gt_pelvis`, `val/scene_0/pred_pelvis`
+- `val/scene_1/gt_pelvis`, `val/scene_1/pred_pelvis`
+- `val/scene_2/gt_pelvis`, `val/scene_2/pred_pelvis`
+- `val/scene_3_random/gt_pelvis`, `val/scene_3_random/pred_pelvis`
+- (same pattern for `train/`)
 
 ## Absolute Pelvis Recovery (`pred_pelvis` videos)
 
-Follows the inference pipeline from `docs/pipeline.md` §5, adapted for the crop image space:
+Steps 1–4 unproject the predicted 2D pelvis position into camera-space 3D using crop K. Step 5 then projects the recovered absolute joints onto the **original uncropped image** using original K.
 
 ```
 1. Denormalize pred_uv from [-1, 1] to crop pixels:
@@ -40,21 +47,25 @@ Follows the inference pipeline from `docs/pipeline.md` §5, adapted for the crop
 2. Use pred_depth as X (forward distance in metres, raw metres — not normalized)
 
 3. Unproject with crop K (BEDLAM2 convention: X=forward, Y=left, Z=up):
-   Y = -(u_crop - cx) * X / fx
-   Z = -(v_crop - cy) * X / fy
+   Y = -(u_crop - cx_crop) * X / fx_crop
+   Z = -(v_crop - cy_crop) * X / fy_crop
 
 4. pelvis_pred_abs = [X, Y, Z]
 
 5. joints_abs = pred_rel + pelvis_pred_abs[np.newaxis, :]   # (127, 3)
+
+6. Project joints_abs onto the original image using original K:
+   u = fx_orig * (-Y / X) + cx_orig
+   v = fy_orig * (-Z / X) + cy_orig
 ```
 
-Using crop K directly (rather than inverting to original image then applying original K) is equivalent and consistent with `draw_pose_frame`, which also projects onto the crop image.
+Drawing on the original image shows where the predicted skeleton lands in the full scene, making it easy to spot absolute localization errors.
 
 ## Functions (all in `train.py`)
 
-### `select_vis_indices(dataset, n_rotate_true=1, n_rotate_false=2)` — called once at startup
+### `select_vis_indices(dataset, n_rotate_true=1, n_rotate_false=1, n_multi_person=1)` — called once at startup
 
-Scans the dataset index and picks the first frame from sequences satisfying the `rotate_flag` distribution. Returns a fixed list of 3 indices: `[rotate_true_idx, rotate_false_idx_0, rotate_false_idx_1]`. `rotate_flag` is read from the label NPZ for each new sequence key `(label_path, body_idx)`.
+Scans the dataset index and picks the first frame from sequences satisfying the slot distribution. Returns a fixed list of up to 3 indices: `[rotate_true_idx, rotate_false_idx, multi_person_idx]`. `rotate_flag` and `n_body` are loaded from each sequence's label NPZ (cached in `label_meta` dict to avoid redundant IO). If no multi-person sequence is available (e.g. frames not yet extracted), that slot is silently omitted.
 
 ### `sample_random_vis_index(dataset)` — called each visualization epoch
 
@@ -66,16 +77,18 @@ Implements steps 1–4 above. Returns `(3,)` float32 array `[X, Y, Z]` in camera
 
 ### `visualize_fixed_samples(model, dataset, indices, device, val_tf)` — called every epoch, indices = fixed_3 + [random_1]
 
-For each starting index, walks forward through consecutive frames of the same sequence until `_VIS_FRAMES=16` frames are collected. For each frame:
+For each starting index, detects whether the sequence is multi-person (`n_body > 1`), then walks forward through consecutive frames of the same `(label_path, body_idx)` until `_VIS_FRAMES=16` frames are collected. For each frame:
 1. Temporarily swaps dataset transform to `val_tf` (no augmentation)
-2. Runs a forward pass: `out = model(x)` where `x = (B, 4, H, W)` [RGB | depth]
-3. Collects:
-   - `pred_joints` `(127, 3)` root-relative from `out["joints"]`
-   - `pred_depth` scalar from `out["pelvis_depth"]`
-   - `pred_uv` `(2,)` from `out["pelvis_uv"]`
-   - GT `pelvis_abs` `(3,)` from `sample["pelvis_abs"]`
-   - Crop K from `sample["intrinsic"]`
-4. Returns **two** `(1, T, 3, H, W)` uint8 video arrays per sequence: one GT-anchored, one pred-anchored.
+2. Runs a forward pass for the selected body: `out = model(x)` where `x = (B, 4, H, W)` [RGB | depth]
+3. Collects for `gt_pelvis`:
+   - `pred_joints` `(127, 3)` root-relative, GT `pelvis_abs` `(3,)`, crop K
+4. Collects for `pred_pelvis`:
+   - Original uncropped RGB and original K from `dataset._label_cache` / `dataset._read_frame`
+   - **Single-person:** recovers pelvis from `pred_depth` + `pred_uv` + crop K; one `(joints, pelvis, color)` tuple
+   - **Multi-person:** uses `frame_body_map` to run a separate forward pass for every `body_idx`; collects one `(joints, pelvis, color)` tuple per person (colors from `_PERSON_COLORS`)
+5. Returns **two** video arrays per sequence:
+   - `gt_pelvis`: `(1, T, 3, 640, 384)` — selected body on crop image, crop K
+   - `pred_pelvis`: `(1, T, 3, H_orig, W_orig)` — all bodies on original image, original K, drawn iteratively via `draw_pose_frame`
 
 ### `build_val_video(rgb_frames, pred_frames, K_frames, pelvis_frames)` — assembles video
 
@@ -103,5 +116,8 @@ Videos are logged via `writer.add_video(tag, vid, global_step=epoch+1, fps=4)` a
 | | `gt_pelvis` | `pred_pelvis` |
 |---|---|---|
 | Pelvis XYZ | From GT label (`pelvis_abs` in dataset sample) | Recovered from `pred_depth` + `pred_uv` + crop K |
+| People | Selected body only | All people in the scene (multi-person for `scene_2`) |
+| Image | Crop (384×640) | Original uncropped image |
+| Projection K | Crop K | Original K |
 | Useful for | Diagnosing relative pose quality in isolation | Diagnosing full end-to-end absolute pose quality |
 | Skeleton misalignment cause | Errors in predicted relative joints only | Errors in relative joints **and** pelvis localization |

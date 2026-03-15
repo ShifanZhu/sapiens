@@ -83,10 +83,9 @@ class BedlamFrameDataset(Dataset):
         for seq_rel in seq_paths:
             label_path = os.path.join(data_root, "data", "label", seq_rel)
             try:
-                meta = np.load(label_path, allow_pickle=True)
-                n_frames = int(meta["n_frames"])
-                joints_cam = meta["joints_cam"]  # (n_body, n_frames, 127, 3)
-                n_body = joints_cam.shape[0]
+                with np.load(label_path, allow_pickle=True) as meta:
+                    n_frames = int(meta["n_frames"])
+                    n_body = int(meta["joints_cam"].shape[0])
             except Exception as e:
                 raise RuntimeError(f"Failed to read label {label_path}: {e}") from e
             for body_idx in range(n_body):
