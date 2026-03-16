@@ -11,12 +11,12 @@ from .heatmap_heads import (AssociativeEmbeddingHead, CIDHead, CPMHead,
 from .hybrid_heads import DEKRHead, VisPredictHead
 from .regression_heads import (DSNTHead, IntegralRegressionHead,
                                RegressionHead, RLEHead, TemporalRegressionHead,
-                               TrajectoryRegressionHead)
+                               TrajectoryRegressionHead, Pose3dRegressionHead)
 
 __all__ = [
     'BaseHead', 'HeatmapHead', 'CPMHead', 'MSPNHead', 'ViPNASHead',
     'RegressionHead', 'IntegralRegressionHead', 'SimCCHead', 'RLEHead',
     'DSNTHead', 'AssociativeEmbeddingHead', 'DEKRHead', 'VisPredictHead',
     'CIDHead', 'RTMCCHead', 'TemporalRegressionHead',
-    'TrajectoryRegressionHead', 'NavCmdHead',
+    'TrajectoryRegressionHead', 'NavCmdHead', 'Pose3dRegressionHead',
 ]

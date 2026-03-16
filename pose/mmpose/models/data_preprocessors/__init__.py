@@ -5,5 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 from .data_preprocessor import PoseDataPreprocessor
+from .rgbd_data_preprocessor import RGBDPoseDataPreprocessor
 
-__all__ = ['PoseDataPreprocessor']
+__all__ = ['PoseDataPreprocessor', 'RGBDPoseDataPreprocessor']

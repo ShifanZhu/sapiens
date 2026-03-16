@@ -18,3 +18,5 @@ __pycache__/
 *.pth
 *.pt2
 pose/demo/data/*
+runs/*
+*/.claude/*

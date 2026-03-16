@@ -12,14 +12,14 @@ the patch embedding are initialised as the mean of the 3 RGB channel weights
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 import torch
 import torch.nn as nn
 
-# Add sapiens sub-packages to path so mmpretrain can be imported
-for p in [
-    "/home/hang/repos_local/MMC/sapiens/pose",
-    "/home/hang/repos_local/MMC/sapiens/engine",
-]:
+# Add sapiens sub-packages to path so mmpretrain can be imported.
+# claude_code/ is one level below the sapiens repo root.
+_sapiens_root = Path(__file__).resolve().parent.parent.parent
+for p in [str(_sapiens_root / "pretrain"), str(_sapiens_root / "engine")]:
     if p not in sys.path:
         sys.path.insert(0, p)
 

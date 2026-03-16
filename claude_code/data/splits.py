@@ -52,7 +52,8 @@ def get_seq_paths(
                 continue
             folder, seq = name.strip().split("/")
             if frames_root is not None:
-                if not os.path.isdir(os.path.join(frames_root, folder, seq)):
+                frames_dir = Path(frames_root) / folder / seq
+                if not frames_dir.is_dir():
                     continue
             seq_paths.append(f"{folder}/{seq}.npz")
     return seq_paths

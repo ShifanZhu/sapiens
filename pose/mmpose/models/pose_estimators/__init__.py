@@ -8,5 +8,7 @@ from .bottomup import BottomupPoseEstimator
 from .pose_lifter import PoseLifter
 from .topdown import TopdownPoseEstimator
 from .topdown3d import Pose3dTopdownEstimator
+from .rgbd_pose3d import RGBDPose3dEstimator
 
-__all__ = ['TopdownPoseEstimator', 'BottomupPoseEstimator', 'PoseLifter', 'Pose3dTopdownEstimator']
+__all__ = ['TopdownPoseEstimator', 'BottomupPoseEstimator', 'PoseLifter',
+           'Pose3dTopdownEstimator', 'RGBDPose3dEstimator']
