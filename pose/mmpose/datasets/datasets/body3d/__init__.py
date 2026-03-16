@@ -10,5 +10,6 @@ from .aic2goliath3d_dataset import Aic2Goliath3dDataset
 from .coco_wholebody2goliath3d_dataset import CocoWholeBody2Goliath3dDataset
 from .crowdpose2goliath3d_dataset import Crowdpose2Goliath3dDataset
 from .mpii2goliath3d_dataset import Mpii2Goliath3dDataset
+from .bedlam2_dataset import Bedlam2Dataset
 
-__all__ = ['Human36mDataset', 'Goliath3dDataset', 'Aic2Goliath3dDataset', 'CocoWholeBody2Goliath3dDataset', 'Crowdpose2Goliath3dDataset', 'Mpii2Goliath3dDataset']
+__all__ = ['Human36mDataset', 'Goliath3dDataset', 'Aic2Goliath3dDataset', 'CocoWholeBody2Goliath3dDataset', 'Crowdpose2Goliath3dDataset', 'Mpii2Goliath3dDataset', 'Bedlam2Dataset']

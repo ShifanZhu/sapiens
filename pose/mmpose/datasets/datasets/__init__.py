@@ -12,4 +12,6 @@ from .face import *  # noqa: F401, F403
 from .fashion import *  # noqa: F401, F403
 from .hand import *  # noqa: F401, F403
 from .wholebody import *  # noqa: F401, F403
-from .nav_cmd_dataset import NavCmdDataset  # noqa: F401
+# todo: comment out cause it has error now, need to be fixed later when we need navigation
+print("WARNING!!!!: nav_cmd_dataset is currently disabled due to an error. Please fix the error in nav_cmd_dataset.py to enable it.")
+# from .nav_cmd_dataset import NavCmdDataset  # noqa: F401

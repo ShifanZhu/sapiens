@@ -17,6 +17,9 @@ from .pose3d_transforms import RandomFlipAroundRoot
 from .topdown_transforms import TopdownAffine
 from .pose3d_transforms import Pose3dRandomFlip, Pose3dRandomBBoxTransform, Pose3dTopdownAffine,\
         Pose3dGenerateTarget, PackPose3dInputs
+from .bedlam2_transforms import (LoadBedlamLabels, NoisyBBoxTransform,
+                                   CropPersonRGBD, SubtractRootJoint,
+                                   PackBedlamInputs)
 
 __all__ = [
     'GetBBoxCenterScale', 'RandomBBoxTransform', 'RandomFlip',
@@ -25,5 +28,7 @@ __all__ = [
     'BottomupGetHeatmapMask', 'BottomupRandomAffine', 'BottomupResize',
     'GenerateTarget', 'KeypointConverter', 'RandomFlipAroundRoot',
     'Pose3dRandomFlip', 'Pose3dRandomBBoxTransform', 'Pose3dTopdownAffine',
-    'Pose3dGenerateTarget', 'PackPose3dInputs'
+    'Pose3dGenerateTarget', 'PackPose3dInputs',
+    'LoadBedlamLabels', 'NoisyBBoxTransform', 'CropPersonRGBD',
+    'SubtractRootJoint', 'PackBedlamInputs',
 ]

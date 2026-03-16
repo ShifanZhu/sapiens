@@ -10,6 +10,7 @@ from .regression_head import RegressionHead
 from .rle_head import RLEHead
 from .temporal_regression_head import TemporalRegressionHead
 from .trajectory_regression_head import TrajectoryRegressionHead
+from .pose3d_regression_head import Pose3dRegressionHead
 
 __all__ = [
     'RegressionHead',
@@ -18,4 +19,5 @@ __all__ = [
     'RLEHead',
     'TemporalRegressionHead',
     'TrajectoryRegressionHead',
+    'Pose3dRegressionHead',
 ]
