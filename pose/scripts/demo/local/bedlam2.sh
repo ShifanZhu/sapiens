@@ -4,7 +4,7 @@ cd ../../.. || exit
 SAPIENS_CHECKPOINT_ROOT=/home/${USER}/repos/sapiens
 
 #----------------------------set your data and output directories----------------------------------------------
-DATA_ROOT='/media/s/SF_backup/bedlam2'
+DATA_ROOT="${BEDLAM2_DATA_ROOT:-/media/s/SF_backup/bedlam2}"
 SEQ_PATHS_FILE='data/bedlam2_splits/test_seqs.txt'
 
 #--------------------------MODEL CARD---------------

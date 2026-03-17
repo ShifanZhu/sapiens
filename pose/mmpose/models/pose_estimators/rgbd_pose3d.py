@@ -74,9 +74,9 @@ class RGBDPose3dEstimator(BasePoseEstimator):
             Tuple of ``(losses_dict, pred_dict)``.
         """
         feats = self.extract_feat(inputs)    # (feat,) tuple
-        losses, preds = self.head.loss(feats, data_samples,
-                                       train_cfg=self.train_cfg)
-        return losses, preds
+        losses, _ = self.head.loss(feats, data_samples,
+                                   train_cfg=self.train_cfg)
+        return losses
 
     def predict(self, inputs: Tensor, data_samples: SampleList) -> SampleList:
         """Inference: extract features, run head, store preds in data_samples.

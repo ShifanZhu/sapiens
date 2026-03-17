@@ -1,6 +1,7 @@
 # Validation Visualization Pipeline
 
 Visualization runs every epoch after validation and logs pose-overlay videos to TensorBoard.
+Implemented as BEDLAM2 mode in `Pose3dVisualizationHook` (`mmpose/engine/hooks/pose3d_visualization_hook.py`), enabled via `bedlam2_video=True` in the config.
 
 ## Sequence Selection
 
@@ -61,51 +62,51 @@ Steps 1–4 unproject the predicted 2D pelvis position into camera-space 3D usin
 
 Drawing on the original image shows where the predicted skeleton lands in the full scene, making it easy to spot absolute localization errors.
 
-## Functions (all in `train.py`)
+## Implementation (MMEngine hook)
 
-### `select_vis_indices(dataset, n_rotate_true=1, n_rotate_false=1, n_multi_person=1)` — called once at startup
+Implemented in `Pose3dVisualizationHook` (`mmpose/engine/hooks/pose3d_visualization_hook.py`) with `bedlam2_video=True`.
 
-Scans the dataset index and picks the first frame from sequences satisfying the slot distribution. Returns a fixed list of up to 3 indices: `[rotate_true_idx, rotate_false_idx, multi_person_idx]`. `rotate_flag` and `n_body` are loaded from each sequence's label NPZ (cached in `label_meta` dict to avoid redundant IO). If no multi-person sequence is available (e.g. frames not yet extracted), that slot is silently omitted.
+### Config
 
-### `sample_random_vis_index(dataset)` — called each visualization epoch
+```python
+custom_hooks = [
+    dict(type='Pose3dVisualizationHook',
+         enable=True,
+         bedlam2_video=True,
+         vis_interval=1),
+]
+```
 
-Picks a random sequence from the dataset (uniform over unique `(label_path, body_idx)` keys) and returns the flat index of its first frame. Called fresh each visualization epoch so the random slot differs across epochs.
+### Key methods (all prefixed with `_bedlam2_`)
 
-### `recover_pelvis_from_pred(pred_depth, pred_uv, K, crop_hw=(640, 384))` — helper
+| Method | When | What |
+|--------|------|------|
+| `_bedlam2_select_fixed(dataset, runner)` | `before_run` | Scans data_list, loads NPZ for `rotate_flag`/`n_body`; returns `[rotate_true_idx, rotate_false_idx, multi_person_idx]` |
+| `_bedlam2_random_start(dataset)` | Each epoch | Picks random `(label_path, body_idx)` key, returns first flat index |
+| `_bedlam2_collect_frames(dataset, start_idx)` | Per sequence | Walks forward collecting up to `n_vis_frames` indices with same `(label_path, body_idx)` |
+| `_bedlam2_recover_pelvis(depth, uv, K, h, w)` | Per frame | Unprojects `pelvis_uv` [-1,1] + `pelvis_depth` to absolute `[X, Y, Z]` using crop K |
+| `_bedlam2_project_2d(joints_abs, K)` | Per frame | Projects absolute joints to pixel coords using BEDLAM2 convention |
+| `_bedlam2_draw_frame(img, joints, K, color)` | Per frame | Draws body skeleton (joints 0-21, `_BODY_LINKS`) on image, returns `(3,H,W)` uint8 |
+| `_bedlam2_visualize_sequence(...)` | Per sequence | Full pipeline: collect frames → forward pass → draw gt/pred videos → log to TensorBoard |
 
-Implements steps 1–4 above. Returns `(3,)` float32 array `[X, Y, Z]` in camera space metres.
+### Frame rendering
 
-### `visualize_fixed_samples(model, dataset, indices, device, val_tf)` — called every epoch, indices = fixed_3 + [random_1]
+For each frame:
+1. Run model forward pass: `pred_joints` `(70, 3)` root-relative, `pred_depth`, `pred_uv`
+2. For `gt_pelvis`: recover GT pelvis from GT labels, add to pred joints, project using crop K, draw on crop image
+3. For `pred_pelvis`: recover pred pelvis from model output using crop K, project using **original K**, draw on original image
+4. Multi-person: run separate forward passes for all `body_idx` values at that frame, draw each in a different color (`_PERSON_COLORS`)
 
-For each starting index, detects whether the sequence is multi-person (`n_body > 1`), then walks forward through consecutive frames of the same `(label_path, body_idx)` until `_VIS_FRAMES=16` frames are collected. For each frame:
-1. Temporarily swaps dataset transform to `val_tf` (no augmentation)
-2. Runs a forward pass for the selected body: `out = model(x)` where `x = (B, 4, H, W)` [RGB | depth]
-3. Collects for `gt_pelvis`:
-   - `pred_joints` `(127, 3)` root-relative, GT `pelvis_abs` `(3,)`, crop K
-4. Collects for `pred_pelvis`:
-   - Original uncropped RGB and original K from `dataset._label_cache` / `dataset._read_frame`
-   - **Single-person:** recovers pelvis from `pred_depth` + `pred_uv` + crop K; one `(joints, pelvis, color)` tuple
-   - **Multi-person:** uses `frame_body_map` to run a separate forward pass for every `body_idx`; collects one `(joints, pelvis, color)` tuple per person (colors from `_PERSON_COLORS`)
-5. Returns **two** video arrays per sequence:
-   - `gt_pelvis`: `(1, T, 3, 640, 384)` — selected body on crop image, crop K
-   - `pred_pelvis`: `(1, T, 3, H_orig, W_orig)` — all bodies on original image, original K, drawn iteratively via `draw_pose_frame`
+### Skeleton drawing
 
-### `build_val_video(rgb_frames, pred_frames, K_frames, pelvis_frames)` — assembles video
-
-Calls `draw_pose_frame` on each frame and stacks into `(1, T, 3, H, W)`.
-
-### `draw_pose_frame(rgb_chw, joints, K, pelvis_abs, color)` — draws one frame
-
-1. **Root → absolute:** adds provided `pelvis_abs` (GT or predicted) to root-relative joints
-2. **Projection** (BEDLAM2 convention):
-   ```
-   u = fx * (-Y / X) + cx
-   v = fy * (-Z / X) + cy
-   ```
-   Joints with `X <= 0.01 m` are skipped as invalid.
-3. **Skeleton:** draws bones as lines between joint pairs from `SMPLX_SKELETON`
-4. **Joints:** draws each of 127 joints as a 3 px dot
-5. Returns `(3, H, W)` uint8 RGB
+Draws body joints 0-21 using `_BODY_LINKS`:
+```
+(0,1),(0,2),(1,3),(2,4),(3,5),(4,6) — hips/legs
+(0,7),(7,8),(8,9),(9,10),(10,21)    — spine/head
+(8,11),(11,12),(12,13)              — left arm
+(8,14),(14,15),(15,16)              — right arm
+```
+Joints with X <= 0.01m are skipped. Each joint gets a 4px dot, bones get 2px lines.
 
 ## TensorBoard Logging
 

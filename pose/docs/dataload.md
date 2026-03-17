@@ -30,7 +30,8 @@ Depth files were stored as compressed NPZ (zlib, 10:1 ratio). Loading a 36 MB fi
 **Fix:** Convert each NPZ to an uncompressed NPY pre-resized to training resolution (384×640) in float16. The dataset loads NPY with `mmap_mode='r'` — the OS pages in only the frames accessed, with zero decompression.
 
 ```bash
-python convert_depth_npy.py --data-root /home/hang/repos_local/MMC/BEDLAM2Datatest --out-h 384 --out-w 640 --workers 8
+conda run -n sapiens_gpu python claude_code/scripts/convert_depth_npy.py \
+    --data-root ${BEDLAM2_DATA_ROOT} --out-h 384 --out-w 640 --workers 8
 ```
 
 ### 2. Depth LRU cache for NPZ fallback (`data/dataset.py`)

@@ -20,6 +20,21 @@
 
 _base_ = ['../../_base_/default_runtime.py']
 
+# Force-import BEDLAM2 modules so they register with MMEngine before runner build
+custom_imports = dict(
+    imports=[
+        'mmpose.models.pose_estimators.rgbd_pose3d',
+        'mmpose.models.backbones.sapiens_rgbd',
+        'mmpose.models.heads.regression_heads.pose3d_regression_head',
+        'mmpose.models.data_preprocessors.rgbd_data_preprocessor',
+        'mmpose.datasets.datasets.body3d.bedlam2_dataset',
+        'mmpose.datasets.transforms.bedlam2_transforms',
+        'mmpose.evaluation.metrics.bedlam_metric',
+        'mmpose.engine.hooks.pose3d_visualization_hook',
+    ],
+    allow_failed_imports=False,
+)
+
 # ── Architecture ──────────────────────────────────────────────────────────────
 model_name = 'sapiens_0.3b'
 embed_dim = 1024
@@ -32,12 +47,13 @@ img_w = 384
 pretrained_checkpoint = '../pretrain/checkpoints/sapiens_0.3b/sapiens_0.3b_epoch_1600_clean.pth'
 
 # ── Data ──────────────────────────────────────────────────────────────────────
-data_root = '/media/s/SF_backup/bedlam2'
+data_root = __import__('os').path.expanduser(
+    __import__('os').environ.get('BEDLAM2_DATA_ROOT', '~/repos_local/MMC/BEDLAM2Datatest'))
 splits_dir = 'data/bedlam2_splits'
 
 # ── Training schedule ─────────────────────────────────────────────────────────
 num_epochs = 50
-warmup_iters = 500   # steps (by_epoch=False)
+warmup_epochs = 3
 
 train_cfg = dict(max_epochs=num_epochs, val_interval=1)
 
@@ -55,11 +71,19 @@ optim_wrapper = dict(
 
 # ── LR Schedule ──────────────────────────────────────────────────────────────
 param_scheduler = [
-    dict(type='LinearLR', begin=0, end=warmup_iters, start_factor=0.001,
-         by_epoch=False),
-    dict(type='CosineAnnealingLR', begin=0, end=num_epochs, eta_min_ratio=0.5,
+    dict(type='LinearLR', begin=0, end=warmup_epochs, start_factor=0.001,
          by_epoch=True),
+    dict(type='CosineAnnealingLR', begin=warmup_epochs, end=num_epochs,
+         eta_min=0, by_epoch=True),
 ]
+
+# Use base Visualizer (no PoseLocalVisualizer) — avoids xtcocotools import chain
+visualizer = dict(
+    type='Visualizer',
+    vis_backends=[
+        dict(type='LocalVisBackend'),
+        dict(type='TensorboardVisBackend'),
+    ])
 
 # ── Hooks ────────────────────────────────────────────────────────────────────
 default_hooks = dict(
@@ -67,11 +91,22 @@ default_hooks = dict(
         type='CheckpointHook',
         save_best='bedlam/mpjpe/body',
         rule='less',
-        interval=10,
+        interval=5,
         max_keep_ckpts=-1,
     ),
     logger=dict(type='LoggerHook', interval=50),
 )
+
+custom_hooks = [
+    dict(type='Pose3dVisualizationHook',
+         enable=True,
+         bedlam2_video=True,
+         vis_interval=1),
+    dict(type='EarlyStoppingHook',
+         monitor='bedlam/mpjpe/body',
+         patience=5,
+         rule='less'),
+]
 
 # ── Model ────────────────────────────────────────────────────────────────────
 model = dict(
@@ -133,7 +168,7 @@ train_dataloader = dict(
         type='Bedlam2Dataset',
         data_root=data_root,
         seq_paths_file=splits_dir + '/train_seqs.txt',
-        frame_stride=5,
+        frame_stride=1,  # frames on disk are already at 6fps (extract_frames.py downsampled)
         pipeline=train_pipeline,
         max_refetch=10,
     ),
@@ -149,7 +184,7 @@ val_dataloader = dict(
         type='Bedlam2Dataset',
         data_root=data_root,
         seq_paths_file=splits_dir + '/val_seqs.txt',
-        frame_stride=5,
+        frame_stride=1,  # frames on disk are already at 6fps
         pipeline=val_pipeline,
         test_mode=True,
         max_refetch=10,
@@ -166,7 +201,7 @@ test_dataloader = dict(
         type='Bedlam2Dataset',
         data_root=data_root,
         seq_paths_file=splits_dir + '/test_seqs.txt',
-        frame_stride=5,
+        frame_stride=1,  # frames on disk are already at 6fps
         pipeline=val_pipeline,
         test_mode=True,
         max_refetch=10,

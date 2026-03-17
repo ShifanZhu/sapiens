@@ -19,8 +19,14 @@ conda activate sapiens_lite
 
 ### 1. Data
 
-The BEDLAM2 dataset must be available at `/media/s/SF_backup/bedlam2` (or update
-`data_root` in the config). Expected layout:
+Set the `BEDLAM2_DATA_ROOT` environment variable to your dataset path (all scripts
+and the config read this automatically):
+
+```bash
+export BEDLAM2_DATA_ROOT=/path/to/bedlam2
+```
+
+Expected layout:
 
 ```
 bedlam2/
@@ -45,7 +51,7 @@ Set in the config (`pretrained_checkpoint`) or override with `--cfg-options`.
 ```bash
 cd /home/<user>/repos/sapiens/pose
 python tools/generate_bedlam2_splits.py \
-    --data-root /media/s/SF_backup/bedlam2 \
+    --data-root ${BEDLAM2_DATA_ROOT} \
     --output-dir data/bedlam2_splits/
 ```
 
@@ -150,7 +156,7 @@ cd /home/<user>/repos/sapiens/pose
 python demo/demo_bedlam2.py \
     configs/sapiens_pose/bedlam2/sapiens_0.3b-50e_bedlam2-640x384.py \
     /path/to/checkpoint.pth \
-    --data-root /media/s/SF_backup/bedlam2 \
+    --data-root ${BEDLAM2_DATA_ROOT} \
     --seq-paths-file data/bedlam2_splits/test_seqs.txt \
     --output-root Outputs/demo/bedlam2 \
     --num-samples 200 \

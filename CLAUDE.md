@@ -122,9 +122,65 @@ class MyModel: ...
 | `sapiens_pose/coco_wholebody/` | 133 | Body + face + hands |
 | `sapiens_pose/goliath/` | 308 | Dense face + body |
 
+## BEDLAM2 RGBD 3D Pose (Integrated)
+
+A custom RGBD 3D pose task has been integrated into the main `pose/` module (commit 4bba4a7). It predicts 70 active SMPL-X joints + pelvis depth/UV from 4-channel (RGB+D) input. **Accuracy verification is still pending.**
+
+### One-time data preprocessing (scripts still in `claude_code/`)
+```bash
+# Extract video frames to JPEGs
+conda run -n sapiens_gpu python claude_code/scripts/extract_frames.py \
+  --data-root <DATA_ROOT> --workers 8
+
+# Convert depth NPZ → NPY mmap (3× faster loading)
+conda run -n sapiens_gpu python claude_code/scripts/convert_depth_npy.py \
+  --data-root <DATA_ROOT> --workers 8
+
+# Generate train/val/test splits
+python pose/tools/generate_bedlam2_splits.py \
+  --data-root <DATA_ROOT> --output-dir pose/data/bedlam2_splits/
+```
+
+### Training
+```bash
+cd pose
+python tools/train.py configs/sapiens_pose/bedlam2/sapiens_0.3b-50e_bedlam2-640x384.py \
+  --work-dir <output_dir> --amp
+```
+
+### Inference demo
+```bash
+pose/scripts/demo/local/bedlam2.sh
+```
+
+### Architecture
+- **Backbone:** `SapiensBackboneRGBD` — 4-channel ViT (`pose/mmpose/models/backbones/sapiens_rgbd.py`)
+- **Head:** `Pose3DRegressionHead` — 3 branches: joints (70×3 m), pelvis_depth (m), pelvis_uv (normalized) (`pose/mmpose/models/heads/regression_heads/pose3d_regression_head.py`)
+- **Estimator:** Custom `RGBDPose3dEstimator` replaces `TopdownPoseEstimator` (skips 2D back-transform) (`pose/mmpose/models/pose_estimators/rgbd_pose3d.py`)
+- **Dataset:** `Bedlam2Dataset` — sequence-level splits, every 5th frame, mmap NPY depth (`pose/mmpose/datasets/datasets/body3d/bedlam2_dataset.py`)
+- **Metric:** MPJPE (mm) on body/hand/all joints (`pose/mmpose/evaluation/metrics/bedlam_metric.py`)
+
+### Coordinate convention (non-standard)
+BEDLAM2 camera space: **X=forward (depth), Y=left, Z=up** — differs from OpenCV (X=right, Y=down, Z=forward).
+Projection: `u = fx·(-Y/X) + cx`, `v = fy·(-Z/X) + cy`
+
+### Joint subset
+70 active joints from 127 SMPL-X: body (22) + eyes (2) + hands (30) + surface (16). Defined in `pose/mmpose/datasets/datasets/body3d/constants.py`.
+
+### Loss
+SmoothL1 (β=0.05m) on all 3 branches. Weights configurable: `--cfg-options lambda_depth=1.0 lambda_uv=1.0`
+
+### Standalone prototype
+`claude_code/` contains the original standalone prototype (uses `sapiens_gpu` env). See `claude_code/CLAUDE.md` for its specific commands.
+
 ## Key File Locations
 
 - Checkpoint download: HuggingFace `facebook/sapiens`; set `$SAPIENS_CHECKPOINT_ROOT` to the `sapiens_host/` directory
 - Task docs: `docs/POSE_README.md`, `docs/PRETRAIN_README.md`, `docs/SEG_README.md`, `docs/DEPTH_README.md`, `docs/NORMAL_README.md`
 - Fine-tuning guides: `docs/finetune/`
 - Lite inference guides: `lite/docs/`
+- BEDLAM2 integration docs: `docs/BEDLAM2_INTEGRATION.md`, `docs/BEDLAM2_TRAINING.md`
+
+## Session Convention
+
+After every session where files are modified, write a summary to `docs/update_log/YYYY-MM-DD.md` (create the file if it doesn't exist). List each changed file and briefly describe what was changed and why.

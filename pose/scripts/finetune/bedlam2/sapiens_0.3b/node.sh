@@ -17,6 +17,10 @@ TRAIN_BATCH_SIZE_PER_GPU=2
 RESUME_FROM=''
 LOAD_FROM=''
 
+# Data root: set BEDLAM2_DATA_ROOT env var to override, e.g.:
+#   BEDLAM2_DATA_ROOT=/data/bedlam2 bash node.sh
+DATA_ROOT="${BEDLAM2_DATA_ROOT:-}"
+
 ##---------------------------------------------------------------
 # mode='debug'
 mode='multi-gpu'
@@ -27,10 +31,13 @@ OUTPUT_DIR="Outputs/train/${DATASET}/${MODEL}/node"
 OUTPUT_DIR="$(echo "${OUTPUT_DIR}/$(date +"%m-%d-%Y_%H:%M:%S")")"
 
 ###--------------------------------------------------------------
+DATA_ROOT_OPT=""
+[ -n "$DATA_ROOT" ] && DATA_ROOT_OPT="data_root=$DATA_ROOT"
+
 if [ -n "$LOAD_FROM" ]; then
-    OPTIONS="train_dataloader.batch_size=$TRAIN_BATCH_SIZE_PER_GPU load_from=$LOAD_FROM"
+    OPTIONS="train_dataloader.batch_size=$TRAIN_BATCH_SIZE_PER_GPU load_from=$LOAD_FROM $DATA_ROOT_OPT"
 else
-    OPTIONS="train_dataloader.batch_size=$TRAIN_BATCH_SIZE_PER_GPU"
+    OPTIONS="train_dataloader.batch_size=$TRAIN_BATCH_SIZE_PER_GPU $DATA_ROOT_OPT"
 fi
 
 if [ -n "$RESUME_FROM" ]; then

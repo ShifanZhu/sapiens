@@ -24,10 +24,10 @@ def parse_args():
         'specify, try to auto resume from the latest checkpoint '
         'in the work directory.')
     parser.add_argument(
-        '--amp',
+        '--no-amp',
         action='store_true',
         default=False,
-        help='enable automatic-mixed-precision training')
+        help='disable automatic-mixed-precision training (AMP is on by default)')
     parser.add_argument(
         '--no-validate',
         action='store_true',
@@ -101,12 +101,12 @@ def merge_args(cfg, args):
         cfg.work_dir = osp.join('./work_dirs',
                                 osp.splitext(osp.basename(args.config))[0])
 
-    # enable automatic-mixed-precision training
-    if args.amp is True:
+    # automatic-mixed-precision training (on by default, disable with --no-amp)
+    if not args.no_amp:
         from mmengine.optim import AmpOptimWrapper, OptimWrapper
         optim_wrapper = cfg.optim_wrapper.get('type', OptimWrapper)
         assert optim_wrapper in (OptimWrapper, AmpOptimWrapper), \
-            '`--amp` is not supported custom optimizer wrapper type ' \
+            '`--no-amp` is required for custom optimizer wrapper type ' \
             f'`{optim_wrapper}.'
         cfg.optim_wrapper.type = 'AmpOptimWrapper'
         cfg.optim_wrapper.setdefault('loss_scale', 'dynamic')

@@ -98,6 +98,13 @@ Backbone imports from `/home/hang/repos_local/MMC/sapiens/` (paths hardcoded in 
 
 **Depth NPY:** Pre-converted depth at `data/depth/npy/` (float16, 384×640) is used by default for fast mmap loading. Falls back to `data/depth/npz/` if NPY is missing. Run `scripts/convert_depth_npy.py` once after extraction.
 
+## Relationship to Integrated Pipeline
+
+This `claude_code/` directory is the **standalone prototype**. The model/data/training logic has been integrated into the main `pose/` module (see `pose/configs/sapiens_pose/bedlam2/`). Differences vs. prototype:
+- Integrated version uses MMEngine config system and 70-joint subset (vs. 127 here)
+- Integrated version predicts pelvis_depth + pelvis_uv as separate branches
+- Data preprocessing scripts (`extract_frames.py`, `convert_depth_npy.py`) are still used from here even for integrated training
+
 ## Key File Paths
 - Checkpoint: `checkpoints/sapiens_0.3b_epoch_1600_clean.pth`
 - Data root: `/home/hang/repos_local/MMC/BEDLAM2Datatest/`
