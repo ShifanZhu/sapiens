@@ -191,7 +191,7 @@ Sapiens ViT with 4-channel patch embedding (instead of 3). Architecture configs:
 
 ### Head (`head.py`)
 
-> **Status: NOT YET IMPLEMENTED.** The transformer decoder design below is the planned replacement for the current global-average-pooling MLP head. The current code still uses the old head (AdaptiveAvgPool2d → shared MLP → 3 branches). Implementation is planned for a future session.
+> **Status: IMPLEMENTED.** `Pose3dTransformerHead` in `mmpose/models/heads/regression_heads/pose3d_transformer_head.py`. Config: `configs/sapiens_pose/bedlam2/sapiens_0.3b-50e_bedlam2-640x384-transformer.py`. The original GAP+MLP head (`Pose3dRegressionHead`) is still available — switch between them by changing `head.type` in the config.
 
 Transformer decoder head with per-joint query tokens and single-layer linear output projections.
 
