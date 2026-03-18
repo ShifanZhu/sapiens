@@ -193,11 +193,22 @@ Sapiens ViT with 4-channel patch embedding (instead of 3). Architecture configs:
 
 > **Status: NOT YET IMPLEMENTED.** The transformer decoder design below is the planned replacement for the current global-average-pooling MLP head. The current code still uses the old head (AdaptiveAvgPool2d → shared MLP → 3 branches). Implementation is planned for a future session.
 
-Transformer decoder head with per-joint query tokens and task-specific output branches.
+Transformer decoder head with per-joint query tokens and single-layer linear output projections.
 
 #### Why not global average pooling?
 
-The previous head collapsed the spatial feature map via `AdaptiveAvgPool2d(1)` into a single vector before regressing 210 coordinates (70 joints × 3). This **destroys all spatial information** — the network cannot know *where* in the image each joint appears. The transformer decoder approach preserves spatial structure: each joint query attends to the relevant image region (e.g., the "left knee" query looks at the left knee area of the feature map).
+The current head collapses the spatial feature map via `AdaptiveAvgPool2d(1)` into a single vector before regressing 210 coordinates (70 joints × 3). This **destroys all spatial information** — the network cannot know *where* in the image each joint appears. The transformer decoder approach preserves spatial structure: each joint query attends to the relevant image region (e.g., the "left knee" query looks at the left knee area of the feature map).
+
+#### Baseline (current GAP+MLP head)
+
+| Model | Body MPJPE | Hand MPJPE | All MPJPE |
+|-------|-----------|-----------|----------|
+| sapiens_0.3b | 80.6 mm | 130.5 mm | 117.6 mm |
+| sapiens_2b | 70.5 mm | 113.7 mm | 102.1 mm |
+
+Hands are dramatically worse than body — consistent with spatial information loss from GAP, since hands are small, spatially localized, and span only 1-2 patches. However, other hypotheses (patch resolution, data distribution, occlusion) have not been ruled out.
+
+**Success criterion:** body MPJPE ≤ 75mm on 0.3b (≥5mm improvement, ~7% relative).
 
 #### Architecture
 
@@ -212,19 +223,18 @@ Step 1 — Prepare spatial tokens:
 Step 2 — Joint query tokens:
   70 learnable query embeddings (70, embed_dim), broadcast to (B, 70, embed_dim)
 
-Step 3 — Transformer decoder (2 layers):
-  Each layer:
-    (a) Self-attention over 70 query tokens                ← learns implicit kinematics
-    (b) Cross-attention: queries attend to spatial_tokens   ← each joint finds its image region
-    (c) FFN: Linear → GELU → Dropout → Linear + residual
+Step 3 — Transformer decoder (1 layer):
+  (a) Self-attention over 70 query tokens                  ← learns implicit kinematics
+  (b) Cross-attention: queries attend to spatial_tokens     ← each joint finds its image region
+  (c) FFN: Linear → GELU → Dropout → Linear + residual
   Output: (B, 70, embed_dim)
 
-Step 4 — Per-joint MLP:
-  Linear(embed_dim, 512) → ReLU → Linear(512, 128) → ReLU → Linear(128, 3)
+Step 4 — Joint output:
+  Linear(embed_dim, 3) applied per token (shared weights)
   Output: joints (B, 70, 3) — root-relative metres
 
-Step 5 — Pelvis branches (from pooled decoder output):
-  mean-pool 70 query outputs → (B, embed_dim)
+Step 5 — Pelvis branches (from pelvis query token, index 0):
+  decoder_out[:, 0, :]  (B, embed_dim)
   ├→ Linear(embed_dim, 1)    → pelvis_depth (B, 1)
   └→ Linear(embed_dim, 2)    → pelvis_uv    (B, 2)
 ```
@@ -233,15 +243,19 @@ Returns a dict: `{"joints": ..., "pelvis_depth": ..., "pelvis_uv": ...}`
 
 #### Design decisions
 
-**2D positional encodings are mandatory.** Flattening the feature map from `(B, 1024, 40, 24)` to `(B, 960, 1024)` destroys spatial structure. Without positional encodings, cross-attention has no way to know where tokens came from in the image. We use DETR-style 2D sine/cosine encodings that encode each token's `(row, col)` position, added to spatial tokens before they enter cross-attention.
+**Start minimal, add complexity only with evidence.** We use 1 decoder layer (not 2+) and single linear output projections (not multi-layer MLPs). This isolates the impact of cross-attention itself. If results are insufficient, we can add depth (more layers, larger MLPs) and know exactly what each change bought.
 
-**Self-attention enables implicit kinematics.** Each transformer decoder layer runs self-attention over the 70 query tokens *before* cross-attention. This lets joints exchange information with anatomically related joints — e.g., the "left hand" query learns to coordinate with the "left elbow" query, producing anatomically plausible predictions without an explicit kinematic tree.
+**2D positional encodings on spatial tokens.** Flattening the feature map from `(B, 1024, 40, 24)` to `(B, 960, 1024)` loses explicit spatial structure. Although the ViT backbone's positional embeddings leave implicit position information in the features, adding DETR-style 2D sine/cosine encodings gives cross-attention a clean, explicit spatial signal. Zero learnable parameters, negligible compute, no downside.
 
-**Keep the decoder lightweight.** The ViT backbone has already done the heavy lifting of spatial and semantic feature extraction. The decoder's job is just routing that information to per-joint predictions. We use **2 decoder layers** (not 6 as in standard DETR) to avoid overfitting and unnecessary latency.
+**Self-attention enables implicit kinematics.** The decoder layer runs self-attention over the 70 query tokens *before* cross-attention. This lets joints exchange information with anatomically related joints — e.g., the "left hand" query learns to coordinate with the "left elbow" query, producing anatomically plausible predictions without an explicit kinematic tree.
 
 **Multi-head attention (8 heads).** With `embed_dim=1024`, each of the 8 heads has 128 dimensions. Different heads can specialize — e.g., when locating a knee, one head might attend to the visible kneecap while another attends to the thigh angle to infer depth.
 
-**Root-relative constraint via explicit subtraction.** The pelvis is joint index 0 among the 70 queries. After the per-joint MLP produces `(B, 70, 3)` raw predictions, we **subtract the predicted pelvis** (index 0) from all 70 joints before computing loss. This explicitly enforces root-relative output: `joints_rel = joints_raw - joints_raw[:, 0:1, :]`. The network optimizes for relative structure rather than global placement, and the pelvis joint is guaranteed to be `(0, 0, 0)` in the output.
+**Pelvis branches from query token 0.** The pelvis is joint index 0 among the 70 queries. Its decoded representation has already attended to the pelvis region via cross-attention, so it is the natural source for pelvis depth and UV prediction. This is simpler and more semantically coherent than mean-pooling all 70 query outputs (which mixes signals from unrelated body parts).
+
+**Joint queries predict root-relative directly.** Ground truth is root-subtracted in the `SubtractRootJoint` data transform (before the model). The joint queries directly output root-relative coordinates — no explicit subtraction inside the head. This preserves the clean factorization: "what pose" (joint queries) vs "where in the scene" (pelvis branches from query 0).
+
+**Single linear output projections.** The decoder's cross-attention already routes spatial information to each query token. A single `Linear(1024, 3)` per token should suffice for mapping to 3D coordinates — DETR uses similarly lightweight output heads. If this proves insufficient, adding MLP depth is a straightforward follow-up.
 
 #### Parameter count (sapiens_0.3b, embed_dim=1024)
 
@@ -249,12 +263,16 @@ Returns a dict: `{"joints": ..., "pelvis_depth": ..., "pelvis_uv": ...}`
 |-----------|-----------|
 | 2D positional encoding | 0 (fixed sine/cosine) |
 | Joint query embeddings | 70 × 1024 = 72K |
-| 2 decoder layers (self-attn + cross-attn + FFN) | ~25M |
-| Per-joint MLP (1024→512→128→3) | ~600K |
-| Pelvis depth + UV branches | ~3K |
-| **Total head** | **~26M** |
+| 1 decoder layer (self-attn + cross-attn + FFN) | ~12.6M |
+| Joint projection Linear(1024, 3) | ~3K |
+| Pelvis depth Linear(1024, 1) + UV Linear(1024, 2) | ~3K |
+| **Total head** | **~13M** |
 
 This replaces the old head (~4M params) but remains small relative to the 300M backbone.
+
+#### Training plan
+
+Train from scratch (pretrained Sapiens backbone, randomly initialized head) with the same recipe as baseline: AdamW, 1e-4 head / 1e-5 backbone, 3-epoch linear warmup, cosine decay, 50 epochs. Purely a head swap — no changes to backbone, data pipeline, estimator, or loss functions.
 
 ### Pretrained Weight Loading (`weights.py`)
 

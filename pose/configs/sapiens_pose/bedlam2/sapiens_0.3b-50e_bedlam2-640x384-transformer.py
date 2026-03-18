@@ -4,19 +4,16 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 #
-# BEDLAM2 RGBD 3D pose estimation with Sapiens 0.3B backbone.
-# Predicts 70 SMPL-X joints (root-relative) + pelvis depth + pelvis UV.
+# BEDLAM2 RGBD 3D pose estimation with Sapiens 0.3B backbone
+# and TRANSFORMER DECODER HEAD (replacing GAP+MLP head).
+#
+# This config is identical to sapiens_0.3b-50e_bedlam2-640x384.py
+# except for the head type. Used for A/B comparison.
 #
 # Usage:
-#   # Step 0: Generate split files (one-time, from the repo root)
-#   conda run -n sapiens python pose/tools/generate_bedlam2_splits.py \
-#       --data-root /media/s/SF_backup/bedlam2/ \
-#       --output-dir pose/data/bedlam2_splits/
-#
-#   # Step 1: Train
 #   conda run -n sapiens python pose/tools/train.py \
-#       pose/configs/sapiens_pose/bedlam2/sapiens_0.3b-50e_bedlam2-640x384.py \
-#       --work-dir /tmp/bedlam2_exp
+#       pose/configs/sapiens_pose/bedlam2/sapiens_0.3b-50e_bedlam2-640x384-transformer.py \
+#       --work-dir /tmp/bedlam2_transformer_exp
 
 _base_ = ['../../_base_/default_runtime.py']
 
@@ -25,7 +22,7 @@ custom_imports = dict(
     imports=[
         'mmpose.models.pose_estimators.rgbd_pose3d',
         'mmpose.models.backbones.sapiens_rgbd',
-        'mmpose.models.heads.regression_heads.pose3d_regression_head',
+        'mmpose.models.heads.regression_heads.pose3d_transformer_head',
         'mmpose.models.data_preprocessors.rgbd_data_preprocessor',
         'mmpose.datasets.datasets.body3d.bedlam2_dataset',
         'mmpose.datasets.transforms.bedlam2_transforms',
@@ -121,11 +118,11 @@ model = dict(
         pretrained=pretrained_checkpoint,
     ),
     head=dict(
-        type='Pose3dRegressionHead',
+        type='Pose3dTransformerHead',
         in_channels=embed_dim,
         num_joints=num_joints,
-        hidden_dim=2048,
-        dropout=0.2,
+        num_heads=8,
+        dropout=0.1,
         loss_joints=dict(type='SoftWeightSmoothL1Loss', beta=0.05,
                          loss_weight=1.0),
         loss_depth=dict(type='SoftWeightSmoothL1Loss', beta=0.05,

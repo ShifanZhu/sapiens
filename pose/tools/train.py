@@ -102,13 +102,17 @@ def merge_args(cfg, args):
                                 osp.splitext(osp.basename(args.config))[0])
 
     # automatic-mixed-precision training (on by default, disable with --no-amp)
+    # Uses FixedAmpOptimWrapper to work around a bug in the Sapiens fork of
+    # MMEngine's AmpOptimWrapper that zeros inf/nan gradients before
+    # unscale_(), preventing the GradScaler from detecting overflow.
     if not args.no_amp:
         from mmengine.optim import AmpOptimWrapper, OptimWrapper
         optim_wrapper = cfg.optim_wrapper.get('type', OptimWrapper)
-        assert optim_wrapper in (OptimWrapper, AmpOptimWrapper), \
+        assert optim_wrapper in (OptimWrapper, AmpOptimWrapper,
+                                 'FixedAmpOptimWrapper'), \
             '`--no-amp` is required for custom optimizer wrapper type ' \
             f'`{optim_wrapper}.'
-        cfg.optim_wrapper.type = 'AmpOptimWrapper'
+        cfg.optim_wrapper.type = 'FixedAmpOptimWrapper'
         cfg.optim_wrapper.setdefault('loss_scale', 'dynamic')
 
     # resume training
