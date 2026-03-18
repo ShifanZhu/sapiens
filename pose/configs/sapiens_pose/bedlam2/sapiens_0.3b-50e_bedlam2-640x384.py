@@ -31,6 +31,7 @@ custom_imports = dict(
         'mmpose.datasets.transforms.bedlam2_transforms',
         'mmpose.evaluation.metrics.bedlam_metric',
         'mmpose.engine.hooks.pose3d_visualization_hook',
+        'mmpose.engine.hooks.train_mpjpe_hook',
         'mmpose.engine.optim_wrappers.fixed_amp_optim_wrapper',
     ],
     allow_failed_imports=False,
@@ -90,7 +91,7 @@ visualizer = dict(
 default_hooks = dict(
     checkpoint=dict(
         type='CheckpointHook',
-        save_best='bedlam/mpjpe/body',
+        save_best='mpjpe/body/val',
         rule='less',
         interval=5,
         max_keep_ckpts=-1,
@@ -103,8 +104,9 @@ custom_hooks = [
          enable=True,
          bedlam2_video=True,
          vis_interval=1),
+    dict(type='TrainMPJPEAveragingHook'),
     dict(type='EarlyStoppingHook',
-         monitor='bedlam/mpjpe/body',
+         monitor='mpjpe/body/val',
          patience=5,
          rule='less'),
 ]

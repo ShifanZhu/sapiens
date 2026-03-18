@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Sequence, Tuple, Union
 
+import numpy as np
 import torch
 import torch.nn as nn
 from mmengine.structures import InstanceData
@@ -34,6 +35,7 @@ from mmpose.registry import MODELS
 from mmpose.utils.typing import (ConfigType, OptConfigType, OptSampleList,
                                   Predictions)
 from ..base_head import BaseHead
+from .pelvis_utils import compute_mpjpe_abs as _compute_mpjpe_abs
 
 
 @MODELS.register_module()
@@ -186,19 +188,27 @@ class Pose3dRegressionHead(BaseHead):
         # ── Losses ───────────────────────────────────────────────────────
         losses = dict()
 
-        losses['loss_joints'] = self.loss_joints_module(
+        losses['loss/joints/train'] = self.loss_joints_module(
             pred['joints'], gt_joints)
 
-        losses['loss_depth'] = self.loss_weight_depth * self.loss_depth_module(
+        losses['loss/depth/train'] = self.loss_weight_depth * self.loss_depth_module(
             pred['pelvis_depth'], gt_depth)
 
-        losses['loss_uv'] = self.loss_weight_uv * self.loss_uv_module(
+        losses['loss/uv/train'] = self.loss_weight_uv * self.loss_uv_module(
             pred['pelvis_uv'], gt_uv)
 
         # ── MPJPE (mm) for logging ────────────────────────────────────────
         with torch.no_grad():
             err_mm = (pred['joints'] - gt_joints).norm(dim=-1).mean() * 1000.0
-        losses['mpjpe'] = err_mm
+            losses['mpjpe'] = err_mm
+
+            # Absolute MPJPE: reconstruct abs positions via predicted pelvis
+            err_abs = _compute_mpjpe_abs(
+                pred['joints'], gt_joints,
+                pred['pelvis_depth'], gt_depth,
+                pred['pelvis_uv'], gt_uv,
+                batch_data_samples)
+            losses['mpjpe_abs'] = err_abs
 
         # Return (losses_dict, pred_dict) — the pred_dict is used by the
         # estimator for visualization hooks.

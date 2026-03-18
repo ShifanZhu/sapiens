@@ -52,21 +52,18 @@ _RGB_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 # Body joint indices 0–21 used for visualisation
 _BODY_IDX = list(range(22))
 
-# Skeleton links over body joints (index into _BODY_IDX)
+# Skeleton links over body joints (SMPL-X ordering, index into _BODY_IDX).
+# SMPL-X body joint ordering (indices 0-21 in active joint space):
+# 0=pelvis, 1=L_hip, 2=R_hip, 3=spine1, 4=L_knee, 5=R_knee,
+# 6=spine2, 7=L_ankle, 8=R_ankle, 9=spine3, 10=L_foot, 11=R_foot,
+# 12=neck, 13=L_collar, 14=R_collar, 15=head, 16=L_shoulder,
+# 17=R_shoulder, 18=L_elbow, 19=R_elbow, 20=L_wrist, 21=R_wrist
 BODY_LINKS = [
-    (0, 1), (0, 2),            # pelvis → left/right hip
-    (1, 3), (2, 4),            # hips → knees
-    (3, 5), (4, 6),            # knees → ankles
-    (0, 7),                    # pelvis → spine1
-    (7, 8),                    # spine1 → spine2
-    (8, 9),                    # spine2 → spine3
-    (9, 10),                   # spine3 → neck
-    (8, 11), (8, 14),          # spine2 → shoulders
-    (11, 12), (12, 13),        # left shoulder → elbow → wrist
-    (14, 15), (15, 16),        # right shoulder → elbow → wrist
-    (13, 17), (13, 18),        # left wrist → index/pinky base
-    (16, 19), (16, 20),        # right wrist → index/pinky base
-    (10, 21),                  # neck → head
+    (0, 3), (3, 6), (6, 9), (9, 12), (12, 15),  # spine / head
+    (0, 1), (1, 4), (4, 7), (7, 10),             # left leg
+    (0, 2), (2, 5), (5, 8), (8, 11),             # right leg
+    (9, 13), (13, 16), (16, 18), (18, 20),       # left arm
+    (9, 14), (14, 17), (17, 19), (19, 21),       # right arm
 ]
 
 
@@ -124,6 +121,20 @@ def _draw_skeleton_2d(img: np.ndarray, kpts_uv: np.ndarray,
     """Draw 2D body skeleton on a copy of img (RGB uint8)."""
     out = img.copy()
     H, W = out.shape[:2]
+
+    def _ok(pt):
+        return 0 <= pt[0] < W and 0 <= pt[1] < H
+
+    # Draw links
+    for (i, j) in BODY_LINKS:
+        if i >= len(kpts_uv) or j >= len(kpts_uv):
+            continue
+        pi = (int(round(kpts_uv[i, 0])), int(round(kpts_uv[i, 1])))
+        pj = (int(round(kpts_uv[j, 0])), int(round(kpts_uv[j, 1])))
+        if _ok(pi) and _ok(pj):
+            cv2.line(out, pi, pj, color, 2, cv2.LINE_AA)
+
+    # Draw joints
     for pt in kpts_uv:
         cx, cy = int(round(pt[0])), int(round(pt[1]))
         if 0 <= cx < W and 0 <= cy < H:
@@ -138,6 +149,13 @@ def _draw_skeleton_3d(ax, joints_abs: np.ndarray,
     x = joints_abs[:, 1]   # lateral (Y)
     y = joints_abs[:, 2]   # vertical (Z)
     z = joints_abs[:, 0]   # depth (X)
+
+    # Draw links
+    for (i, j) in BODY_LINKS:
+        if i >= len(joints_abs) or j >= len(joints_abs):
+            continue
+        ax.plot([x[i], x[j]], [y[i], y[j]], [z[i], z[j]],
+                c=color, linewidth=1.5, alpha=0.7)
 
     ax.scatter(x, y, z, c=color, s=20, depthshade=True, label=label)
 

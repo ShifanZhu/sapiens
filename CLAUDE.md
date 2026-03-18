@@ -176,10 +176,12 @@ SmoothL1 (β=0.05m) on all 3 branches. Weights configurable: `--cfg-options lamb
 ## Key File Locations
 
 - Checkpoint download: HuggingFace `facebook/sapiens`; set `$SAPIENS_CHECKPOINT_ROOT` to the `sapiens_host/` directory
-- Task docs: `docs/POSE_README.md`, `docs/PRETRAIN_README.md`, `docs/SEG_README.md`, `docs/DEPTH_README.md`, `docs/NORMAL_README.md`
+- Task docs: `docs/tasks/` (POSE, SEG, DEPTH, NORMAL, PRETRAIN READMEs)
 - Fine-tuning guides: `docs/finetune/`
 - Lite inference guides: `lite/docs/`
-- BEDLAM2 integration docs: `docs/BEDLAM2_INTEGRATION.md`, `docs/BEDLAM2_TRAINING.md`
+- BEDLAM2 docs: `pose/docs/bedlam2/` (integration.md, training.md)
+- Pose design docs: `pose/docs/design/` (pipeline, dataload, visualization)
+- PRDs & issues: `pose/docs/prd/`
 
 ## Session Convention
 

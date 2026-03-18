@@ -53,10 +53,16 @@ from mmpose.structures import PoseDataSample, merge_data_samples
 
 # ── BEDLAM2 constants ────────────────────────────────────────────────────────
 _BODY_LINKS: List[Tuple[int, int]] = [
-    (0, 1), (0, 2), (1, 3), (2, 4), (3, 5), (4, 6),     # hips / legs
-    (0, 7), (7, 8), (8, 9), (9, 10), (10, 21),             # spine / head
-    (8, 11), (11, 12), (12, 13),                            # left arm
-    (8, 14), (14, 15), (15, 16),                            # right arm
+    # SMPL-X body joint ordering (indices 0-21 in active joint space):
+    # 0=pelvis, 1=L_hip, 2=R_hip, 3=spine1, 4=L_knee, 5=R_knee,
+    # 6=spine2, 7=L_ankle, 8=R_ankle, 9=spine3, 10=L_foot, 11=R_foot,
+    # 12=neck, 13=L_collar, 14=R_collar, 15=head, 16=L_shoulder,
+    # 17=R_shoulder, 18=L_elbow, 19=R_elbow, 20=L_wrist, 21=R_wrist
+    (0, 3), (3, 6), (6, 9), (9, 12), (12, 15),  # spine / head
+    (0, 1), (1, 4), (4, 7), (7, 10),             # left leg
+    (0, 2), (2, 5), (5, 8), (8, 11),             # right leg
+    (9, 13), (13, 16), (16, 18), (18, 20),       # left arm
+    (9, 14), (14, 17), (17, 19), (19, 21),       # right arm
 ]
 _PERSON_COLORS: List[Tuple[int, int, int]] = [
     (0, 200, 0), (220, 120, 0), (0, 80, 200),
@@ -686,8 +692,8 @@ class Pose3dVisualizationHook(Hook):
         if not gt_frames or not pred_frames:
             return
 
-        gt_tag = f'{split}/{scene_name}/gt_pelvis'
-        pred_tag = f'{split}/{scene_name}/pred_pelvis'
+        gt_tag = f'video/{split}/{scene_name}/gt_pelvis'
+        pred_tag = f'video/{split}/{scene_name}/pred_pelvis'
         try:
             tb_writer.add_video(
                 gt_tag, self._bedlam2_build_video(gt_frames),

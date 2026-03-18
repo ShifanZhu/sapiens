@@ -5,6 +5,10 @@ import numpy as np
 import pytest
 from mmengine.structures import InstanceData
 
+_TEST_K = np.array([[500.0, 0, 192.0],
+                    [0, 500.0, 320.0],
+                    [0, 0, 1.0]], dtype=np.float32)
+
 
 def _build_head(in_channels=1024, num_joints=70):
     """Build a Pose3dTransformerHead with default config."""
@@ -59,6 +63,7 @@ def _make_data_samples(batch_size=2, num_joints=70):
         gt_labels.pelvis_depth = torch.tensor([3.5])
         gt_labels.pelvis_uv = torch.randn(1, 2)
         ds.gt_instance_labels = gt_labels
+        ds.set_metainfo({'K': _TEST_K, 'img_shape': (640, 384)})
         samples.append(ds)
     return samples
 
@@ -69,7 +74,7 @@ class TestLoss:
     def test_loss_keys(self):
         head = _build_head()
         losses, _ = head.loss(_make_feats(), _make_data_samples())
-        assert set(losses.keys()) == {'loss_joints', 'loss_depth', 'loss_uv', 'mpjpe'}
+        assert set(losses.keys()) == {'loss/joints/train', 'loss/depth/train', 'loss/uv/train', 'mpjpe', 'mpjpe_abs'}
 
     def test_losses_finite(self):
         head = _build_head()

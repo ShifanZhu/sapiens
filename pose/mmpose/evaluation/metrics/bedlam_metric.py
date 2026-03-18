@@ -21,6 +21,14 @@ from mmengine.logging import MMLogger
 
 from mmpose.registry import METRICS
 
+
+def _safe_get(obj, key, default=None):
+    """Get attribute/key from dict or object (PoseDataSample)."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 # Active joint group slices (body, hand)
 _BODY_INDICES = list(range(0, 22))          # 22 body joints
 _HAND_INDICES = list(range(24, 54))         # 30 hand joints (left+right)
@@ -40,7 +48,7 @@ class BedlamMPJPEMetric(BaseMetric):
         prefix (str, optional): Metric name prefix.
     """
 
-    default_prefix = 'bedlam'
+    default_prefix = ''
 
     def __init__(
         self,
@@ -68,10 +76,35 @@ class BedlamMPJPEMetric(BaseMetric):
             if gt_coords.ndim == 3:
                 gt_coords = gt_coords[0]       # → (70, 3)
 
-            self.results.append({
+            # Pelvis predictions + GT for absolute MPJPE
+            pred_inst = data_sample['pred_instances']
+            gt_labels = _safe_get(data_sample, 'gt_instance_labels', {})
+            metainfo = _safe_get(data_sample, 'metainfo', {})
+
+            result = {
                 'pred': pred_coords,
                 'gt': gt_coords,
-            })
+            }
+
+            # Collect pelvis data if available
+            if ('pelvis_depth' in pred_inst and 'pelvis_uv' in pred_inst
+                    and 'K' in metainfo):
+                result['pred_pelvis_depth'] = np.asarray(
+                    pred_inst['pelvis_depth']).ravel()[0]
+                pred_uv = np.asarray(pred_inst['pelvis_uv']).ravel()
+                result['pred_pelvis_uv'] = pred_uv
+
+                result['gt_pelvis_depth'] = np.asarray(
+                    gt_labels['pelvis_depth']).ravel()[0]
+                gt_uv = np.asarray(gt_labels['pelvis_uv']).ravel()
+                result['gt_pelvis_uv'] = gt_uv
+
+                result['K'] = np.asarray(metainfo['K'], dtype=np.float32)
+                img_shape = metainfo.get('img_shape', (640, 384))
+                result['crop_h'] = int(img_shape[0])
+                result['crop_w'] = int(img_shape[1])
+
+            self.results.append(result)
 
     def compute_metrics(self, results: list) -> Dict[str, float]:
         """Compute per-group MPJPE from accumulated results."""
@@ -86,12 +119,42 @@ class BedlamMPJPEMetric(BaseMetric):
             return float(np.linalg.norm(pred - gt, axis=-1).mean()) * 1000.0
 
         metrics = {
-            'mpjpe/all': mpjpe_mm(pred_all, gt_all),
-            'mpjpe/body': mpjpe_mm(pred_all[:, _BODY_INDICES],
-                                   gt_all[:, _BODY_INDICES]),
-            'mpjpe/hand': mpjpe_mm(pred_all[:, _HAND_INDICES],
-                                   gt_all[:, _HAND_INDICES]),
+            'mpjpe/rel/val': mpjpe_mm(pred_all, gt_all),
+            'mpjpe/body/val': mpjpe_mm(pred_all[:, _BODY_INDICES],
+                                       gt_all[:, _BODY_INDICES]),
+            'mpjpe/hand/val': mpjpe_mm(pred_all[:, _HAND_INDICES],
+                                       gt_all[:, _HAND_INDICES]),
         }
+
+        # Absolute MPJPE using predicted pelvis
+        if 'K' in results[0]:
+            abs_pred_list = []
+            abs_gt_list = []
+            for r in results:
+                K = r['K']
+                ch, cw = r['crop_h'], r['crop_w']
+                fx, fy = float(K[0, 0]), float(K[1, 1])
+                cx, cy = float(K[0, 2]), float(K[1, 2])
+
+                def _recover(depth, uv):
+                    X = float(depth)
+                    u_px = (float(uv[0]) + 1.0) / 2.0 * cw
+                    v_px = (float(uv[1]) + 1.0) / 2.0 * ch
+                    Y = -(u_px - cx) * X / fx
+                    Z = -(v_px - cy) * X / fy
+                    return np.array([X, Y, Z], dtype=np.float32)
+
+                pred_pelvis = _recover(
+                    r['pred_pelvis_depth'], r['pred_pelvis_uv'])
+                gt_pelvis = _recover(
+                    r['gt_pelvis_depth'], r['gt_pelvis_uv'])
+
+                abs_pred_list.append(r['pred'] + pred_pelvis[np.newaxis, :])
+                abs_gt_list.append(r['gt'] + gt_pelvis[np.newaxis, :])
+
+            abs_pred = np.stack(abs_pred_list)
+            abs_gt = np.stack(abs_gt_list)
+            metrics['mpjpe/abs/val'] = mpjpe_mm(abs_pred, abs_gt)
 
         for k, v in metrics.items():
             logger.info(f'  {k}: {v:.2f} mm')
