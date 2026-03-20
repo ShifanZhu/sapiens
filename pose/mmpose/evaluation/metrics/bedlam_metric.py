@@ -62,7 +62,12 @@ class BedlamMPJPEMetric(BaseMetric):
         data_batch: Sequence[dict],
         data_samples: Sequence[dict],
     ) -> None:
-        """Accumulate one batch of predictions and ground truth."""
+        """Accumulate one batch of predictions and ground truth.
+
+        Note: MMEngine's ``Evaluator.process`` calls ``to_dict()`` on each
+        data sample before passing it here, which flattens metainfo fields
+        (e.g. ``K``, ``img_shape``) to the top level of the dict.
+        """
         for data_sample in data_samples:
             pred_coords = data_sample['pred_instances']['keypoints']
             # pred_coords: (1, 70, 3) or (70, 3)
@@ -76,10 +81,10 @@ class BedlamMPJPEMetric(BaseMetric):
             if gt_coords.ndim == 3:
                 gt_coords = gt_coords[0]       # → (70, 3)
 
-            # Pelvis predictions + GT for absolute MPJPE
+            # Pelvis predictions + GT for absolute MPJPE.
+            # K is at the top level (to_dict() flattens metainfo).
             pred_inst = data_sample['pred_instances']
             gt_labels = _safe_get(data_sample, 'gt_instance_labels', {})
-            metainfo = _safe_get(data_sample, 'metainfo', {})
 
             result = {
                 'pred': pred_coords,
@@ -88,19 +93,24 @@ class BedlamMPJPEMetric(BaseMetric):
 
             # Collect pelvis data if available
             if ('pelvis_depth' in pred_inst and 'pelvis_uv' in pred_inst
-                    and 'K' in metainfo):
+                    and 'K' in data_sample):
                 result['pred_pelvis_depth'] = np.asarray(
                     pred_inst['pelvis_depth']).ravel()[0]
                 pred_uv = np.asarray(pred_inst['pelvis_uv']).ravel()
                 result['pred_pelvis_uv'] = pred_uv
 
-                result['gt_pelvis_depth'] = np.asarray(
+                def _to_np(v):
+                    if hasattr(v, 'detach'):
+                        v = v.detach().cpu()
+                    return np.asarray(v)
+
+                result['gt_pelvis_depth'] = _to_np(
                     gt_labels['pelvis_depth']).ravel()[0]
-                gt_uv = np.asarray(gt_labels['pelvis_uv']).ravel()
+                gt_uv = _to_np(gt_labels['pelvis_uv']).ravel()
                 result['gt_pelvis_uv'] = gt_uv
 
-                result['K'] = np.asarray(metainfo['K'], dtype=np.float32)
-                img_shape = metainfo.get('img_shape', (640, 384))
+                result['K'] = np.asarray(data_sample['K'], dtype=np.float32)
+                img_shape = data_sample.get('img_shape', (640, 384))
                 result['crop_h'] = int(img_shape[0])
                 result['crop_w'] = int(img_shape[1])
 

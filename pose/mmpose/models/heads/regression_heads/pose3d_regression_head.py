@@ -197,18 +197,17 @@ class Pose3dRegressionHead(BaseHead):
         losses['loss/uv/train'] = self.loss_weight_uv * self.loss_uv_module(
             pred['pelvis_uv'], gt_uv)
 
-        # ── MPJPE (mm) for logging ────────────────────────────────────────
+        # ── MPJPE (mm) — stored as attributes for TrainMPJPEAveragingHook.
+        # Not included in the losses dict to avoid MMEngine auto-logging
+        # noisy per-batch scalars (the hook writes epoch-averaged values).
         with torch.no_grad():
-            err_mm = (pred['joints'] - gt_joints).norm(dim=-1).mean() * 1000.0
-            losses['mpjpe'] = err_mm
-
-            # Absolute MPJPE: reconstruct abs positions via predicted pelvis
-            err_abs = _compute_mpjpe_abs(
+            self._train_mpjpe = (
+                (pred['joints'] - gt_joints).norm(dim=-1).mean() * 1000.0)
+            self._train_mpjpe_abs = _compute_mpjpe_abs(
                 pred['joints'], gt_joints,
                 pred['pelvis_depth'], gt_depth,
                 pred['pelvis_uv'], gt_uv,
                 batch_data_samples)
-            losses['mpjpe_abs'] = err_abs
 
         # Return (losses_dict, pred_dict) — the pred_dict is used by the
         # estimator for visualization hooks.

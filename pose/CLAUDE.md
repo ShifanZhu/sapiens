@@ -10,7 +10,7 @@ Only modify files inside `pose/`. Do NOT change code outside the `pose/` folder 
 
 ## Session Convention
 
-After every session where files are modified, append an entry to `../docs/update_log/YYYY-MM-DD.md` (create the file if it doesn't exist). List each changed file and briefly describe what was changed and why. Always include a brief summary section at the top of the file each time it is modified.
+After every session where files are modified, append an entry to `../docs/update_log/YYYY-MM-DD.md` (create the file if it doesn't exist). List each changed file and briefly describe what was changed and why. Always include a brief summary section at the top of the file each time it is modified. Also update `../docs/update_log/README.md` if necessary (e.g. new date entry or summary changed significantly).
 
 ## Common Commands
 
@@ -32,6 +32,15 @@ pytest tests/
 
 # Run a single test file
 pytest tests/test_models/test_heads/test_heatmap_head.py -v
+
+# Quick smoke-test train.py — limit to 1 sequence each for train/val
+# max_seqs=1 avoids indexing the full dataset (the main bottleneck).
+# Fixed startup cost (~20s) is unavoidable; this minimises everything else.
+python tools/train.py configs/sapiens_pose/bedlam2/sapiens_0.3b-50e_bedlam2-640x384-transformer.py \
+  --work-dir runs/test_verify \
+  --cfg-options train_cfg.max_epochs=1 train_cfg.val_interval=1 \
+    train_dataloader.dataset.max_seqs=1 \
+    val_dataloader.dataset.max_seqs=1
 ```
 
 ## Architecture
@@ -55,6 +64,12 @@ All components are registered via MMEngine's `Registry`. A new model/dataset/tra
 - **Estimator:** `RGBDPose3dEstimator` (`mmpose/models/pose_estimators/rgbd_pose3d.py`) — skips 2D affine back-transform; joints are already in camera 3D space
 - **Dataset:** `Bedlam2Dataset` (`mmpose/datasets/datasets/body3d/bedlam2_dataset.py`) — indexes `(label_path, body_idx, frame_idx)` triples from NPZ files
 - **Metric:** MPJPE in mm on body/hand/all joint subsets (`mmpose/evaluation/metrics/bedlam_metric.py`)
+
+### MMEngine Gotchas
+
+**`Evaluator.process()` flattens metainfo.** Before calling `metric.process()`, MMEngine's `Evaluator` calls `data_sample.to_dict()` on each `PoseDataSample`. This flattens metainfo fields (e.g. `K`, `img_shape`) to the **top level** of the dict — they are NOT nested under a `'metainfo'` key. In metric `process()`, read them as `data_sample['K']`, not `data_sample['metainfo']['K']`.
+
+**Do not put non-loss scalars in the losses dict.** MMEngine auto-logs every key returned by `model.train_step()` (i.e. everything in the losses dict) to TensorBoard as noisy per-iteration scalars. To log epoch-level metrics cleanly, store values as head attributes (e.g. `self._train_mpjpe`) and read them from a custom hook via `runner.model.head._train_mpjpe`.
 
 ### Config System
 Configs are in `configs/sapiens_pose/<task>/`. All BEDLAM2 custom modules must be listed in `custom_imports` in the config to register them before the runner builds:
@@ -82,3 +97,29 @@ custom_imports = dict(
 | `demo/demo_bedlam2.py` | BEDLAM2 inference demo script |
 | `scripts/demo/local/bedlam2.sh` | Shell wrapper for demo |
 | `scripts/finetune/bedlam2/` | Fine-tuning scripts |
+
+### Docs Structure (`pose/docs/`)
+```
+pose/docs/
+├── README.md                   # Overview of pose docs
+├── bedlam2/
+│   ├── integration.md          # How BEDLAM2 was integrated into pose/
+│   └── training.md             # Training guide for BEDLAM2
+├── design/
+│   ├── pipeline.md             # End-to-end model pipeline design — read first when starting work
+│   ├── dataload.md             # Data loading architecture
+│   ├── visualization.md        # Skeleton/keypoint visualization
+│   ├── attention_pooling_pelvis.md  # Design: attention pooling for pelvis
+│   └── mpjpe_logging_investigation.md  # Investigation: MPJPE logging
+└── prd/
+    ├── transformer_decoder_head.md     # PRD: transformer decoder head
+    ├── tensorboard_restructure.md      # PRD: TensorBoard restructure
+    └── issues/
+        ├── 001_transformer_decoder_head_module.md
+        ├── 002_training_config_smoke_test.md
+        ├── 003_ab_training_evaluation.md
+        ├── 004_restructure_tags.md
+        └── 005_absolute_mpjpe_and_epoch_avg.md
+```
+
+Project-wide docs (task guides, finetune, update logs) are in `../docs/` — see root `CLAUDE.md` for structure.

@@ -63,6 +63,8 @@ class Bedlam2Dataset(BaseDataset):
             Mutually exclusive with ``seq_paths``.
         frame_stride (int): Step between sampled frames (default 5 → 6 fps
             from 30 fps source).
+        max_seqs (int, optional): Truncate to this many sequences. Useful
+            for quick smoke-tests to avoid indexing the full dataset.
         pipeline (list): Data transform pipeline.
         metainfo (dict): Dataset metainfo (from
             ``configs/_base_/datasets/bedlam2_smplx70.py``).
@@ -80,6 +82,7 @@ class Bedlam2Dataset(BaseDataset):
         seq_paths: Optional[List[str]] = None,
         seq_paths_file: Optional[str] = None,
         frame_stride: int = 5,
+        max_seqs: Optional[int] = None,
         pipeline: list = [],
         metainfo: Optional[dict] = None,
         test_mode: bool = False,
@@ -98,6 +101,8 @@ class Bedlam2Dataset(BaseDataset):
         if seq_paths_file is not None:
             with open(seq_paths_file) as f:
                 seq_paths = [ln.strip() for ln in f if ln.strip()]
+        if max_seqs is not None:
+            seq_paths = seq_paths[:max_seqs]
         self._seq_paths = seq_paths
 
         super().__init__(

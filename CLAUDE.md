@@ -183,6 +183,53 @@ SmoothL1 (β=0.05m) on all 3 branches. Weights configurable: `--cfg-options lamb
 - Pose design docs: `pose/docs/design/` (pipeline, dataload, visualization)
 - PRDs & issues: `pose/docs/prd/`
 
+## Docs Structure
+
+### `docs/` (project-wide)
+```
+docs/
+├── evaluate/
+│   └── POSE_README.md          # Evaluation instructions for pose
+├── finetune/
+│   ├── DEPTH_README.md
+│   ├── NORMAL_README.md
+│   ├── POSE_README.md
+│   └── SEG_README.md
+├── tasks/
+│   ├── DEPTH_README.md
+│   ├── NORMAL_README.md
+│   ├── POSE_README.md
+│   ├── PRETRAIN_README.md
+│   └── SEG_README.md
+└── update_log/
+    ├── README.md               # Index of session logs
+    └── YYYY-MM-DD.md           # Per-session change logs
+```
+
+### `pose/docs/` (pose-module-specific)
+```
+pose/docs/
+├── README.md                   # Overview of pose docs
+├── bedlam2/
+│   ├── integration.md          # How BEDLAM2 was integrated into pose/
+│   └── training.md             # Training guide for BEDLAM2
+├── design/
+│   ├── pipeline.md             # End-to-end model pipeline design
+│   ├── dataload.md             # Data loading architecture
+│   ├── visualization.md        # Skeleton/keypoint visualization
+│   ├── attention_pooling_pelvis.md  # Design: attention pooling for pelvis
+│   └── mpjpe_logging_investigation.md  # Investigation: MPJPE logging
+└── prd/
+    ├── transformer_decoder_head.md     # PRD: transformer decoder head
+    ├── tensorboard_restructure.md      # PRD: TensorBoard restructure
+    └── issues/
+        ├── 001_transformer_decoder_head_module.md
+        ├── 002_training_config_smoke_test.md
+        ├── 003_ab_training_evaluation.md
+        ├── 004_restructure_tags.md
+        └── 005_absolute_mpjpe_and_epoch_avg.md
+```
+
 ## Session Convention
 
 After every session where files are modified, write a summary to `docs/update_log/YYYY-MM-DD.md` (create the file if it doesn't exist). List each changed file and briefly describe what was changed and why.

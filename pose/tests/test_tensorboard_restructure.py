@@ -41,8 +41,7 @@ class TestHeadLossKeyNames:
     """Both heads should return loss/joints/train, loss/depth/train,
     loss/uv/train instead of loss_joints, loss_depth, loss_uv."""
 
-    EXPECTED_KEYS = {'loss/joints/train', 'loss/depth/train',
-                     'loss/uv/train', 'mpjpe', 'mpjpe_abs'}
+    EXPECTED_KEYS = {'loss/joints/train', 'loss/depth/train', 'loss/uv/train'}
 
     def test_regression_head_keys(self):
         from mmpose.models.heads.regression_heads.pose3d_regression_head import (
@@ -108,9 +107,8 @@ class TestHeadMpjpeAbs:
             Pose3dRegressionHead,
         )
         head = Pose3dRegressionHead(in_channels=1024)
-        losses, _ = head.loss(_make_feats(), _make_data_samples())
-        assert 'mpjpe_abs' in losses
-        v = losses['mpjpe_abs']
+        head.loss(_make_feats(), _make_data_samples())
+        v = head._train_mpjpe_abs
         assert v.dim() == 0, f'not scalar: {v.shape}'
         assert torch.isfinite(v), f'not finite: {v}'
         assert not v.requires_grad
@@ -120,9 +118,8 @@ class TestHeadMpjpeAbs:
             Pose3dTransformerHead,
         )
         head = Pose3dTransformerHead(in_channels=1024)
-        losses, _ = head.loss(_make_feats(), _make_data_samples())
-        assert 'mpjpe_abs' in losses
-        v = losses['mpjpe_abs']
+        head.loss(_make_feats(), _make_data_samples())
+        v = head._train_mpjpe_abs
         assert v.dim() == 0
         assert torch.isfinite(v)
         assert not v.requires_grad
@@ -258,14 +255,25 @@ class TestTrainMPJPEHook:
 
         hook = TrainMPJPEAveragingHook()
 
-        # Simulate 3 batches with known mpjpe values
+        # Simulate 3 batches with known mpjpe values stored on a fake head
         values = [100.0, 200.0, 300.0]
         abs_values = [150.0, 250.0, 350.0]
 
+        class FakeHead:
+            pass
+
+        class FakeModel:
+            head = FakeHead()
+
+        class FakeRunnerWithModel:
+            epoch = 5
+            model = FakeModel()
+
+        runner_with_model = FakeRunnerWithModel()
         for mpjpe_val, abs_val in zip(values, abs_values):
-            outputs = {'mpjpe': torch.tensor(mpjpe_val),
-                       'mpjpe_abs': torch.tensor(abs_val)}
-            hook.after_train_iter(None, 0, None, outputs)
+            runner_with_model.model.head._train_mpjpe = torch.tensor(mpjpe_val)
+            runner_with_model.model.head._train_mpjpe_abs = torch.tensor(abs_val)
+            hook.after_train_iter(runner_with_model, 0, None, {})
 
         assert len(hook._mpjpe_buffer) == 3
         assert len(hook._mpjpe_abs_buffer) == 3

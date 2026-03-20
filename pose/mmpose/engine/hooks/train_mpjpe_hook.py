@@ -7,7 +7,7 @@ Accumulates per-batch ``mpjpe`` and ``mpjpe_abs`` values from the head's
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Optional
 
 import torch
 from mmengine.hooks import Hook
@@ -27,6 +27,12 @@ class TrainMPJPEAveragingHook(Hook):
         self._mpjpe_buffer: list[float] = []
         self._mpjpe_abs_buffer: list[float] = []
 
+    def before_run(self, runner) -> None:
+        # Remove any stale 'mpjpe' / 'mpjpe_abs' keys that older checkpoints
+        # may have written directly into the MessageHub losses dict.
+        for key in ('mpjpe', 'mpjpe_abs'):
+            runner.message_hub.log_scalars.pop(key, None)
+
     def after_train_iter(
         self,
         runner,
@@ -34,14 +40,24 @@ class TrainMPJPEAveragingHook(Hook):
         data_batch: Optional[dict],
         outputs: dict,
     ) -> None:
-        if 'mpjpe' in outputs:
-            val = outputs['mpjpe']
+        # Read per-batch MPJPE stored as attributes on the head
+        # (not in the losses dict to avoid MMEngine auto-logging them).
+        # Unwrap DDP wrapper if present.
+        model = runner.model
+        if hasattr(model, 'module'):
+            model = model.module
+        head = getattr(model, 'head', None)
+        if head is None:
+            return
+        val = getattr(head, '_train_mpjpe', None)
+        if val is not None:
             self._mpjpe_buffer.append(
                 val.item() if isinstance(val, torch.Tensor) else float(val))
-        if 'mpjpe_abs' in outputs:
-            val = outputs['mpjpe_abs']
+        val_abs = getattr(head, '_train_mpjpe_abs', None)
+        if val_abs is not None:
             self._mpjpe_abs_buffer.append(
-                val.item() if isinstance(val, torch.Tensor) else float(val))
+                val_abs.item() if isinstance(val_abs, torch.Tensor)
+                else float(val_abs))
 
     def after_train_epoch(self, runner) -> None:
         if not self._mpjpe_buffer:
@@ -51,26 +67,12 @@ class TrainMPJPEAveragingHook(Hook):
         avg_abs = (sum(self._mpjpe_abs_buffer) / len(self._mpjpe_abs_buffer)
                    if self._mpjpe_abs_buffer else 0.0)
 
-        # Write to TensorBoard
-        tb_writer = self._get_tb_writer(runner)
-        if tb_writer is not None:
-            tb_writer.add_scalar('mpjpe/rel/train', avg_rel, runner.epoch)
-            tb_writer.add_scalar('mpjpe/abs/train', avg_abs, runner.epoch)
+        # Write via visualizer so all backends (TensorBoard, JSON, terminal)
+        # receive the values.
+        runner.visualizer.add_scalar('mpjpe/rel/train', avg_rel, runner.epoch)
+        runner.visualizer.add_scalar('mpjpe/abs/train', avg_abs, runner.epoch)
 
         # Reset
         self._mpjpe_buffer.clear()
         self._mpjpe_abs_buffer.clear()
 
-    @staticmethod
-    def _get_tb_writer(runner):
-        """Return TensorBoard SummaryWriter or None."""
-        try:
-            tb = runner.visualizer._vis_backends.get(
-                'TensorboardVisBackend')
-            if tb is None:
-                return None
-            if not tb._env_initialized:
-                tb._init_env()
-            return tb._tensorboard
-        except Exception:
-            return None
