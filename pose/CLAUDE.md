@@ -71,6 +71,10 @@ All components are registered via MMEngine's `Registry`. A new model/dataset/tra
 
 **Do not put non-loss scalars in the losses dict.** MMEngine auto-logs every key returned by `model.train_step()` (i.e. everything in the losses dict) to TensorBoard as noisy per-iteration scalars. To log epoch-level metrics cleanly, store values as head attributes (e.g. `self._train_mpjpe`) and read them from a custom hook via `runner.model.head._train_mpjpe`.
 
+**MessageHub loss keys are prefixed with `train/`.** `RuntimeInfoHook.after_train_iter` stores every key from `model.train_step()` outputs as `f'train/{key}'` in `message_hub.log_scalars`. When purging stale keys from a resumed checkpoint, use the prefixed form (e.g. `'train/mpjpe'`, not `'mpjpe'`).
+
+**Purge stale MessageHub keys in `before_train`, not `before_run`.** `before_run` fires before `runner.load_or_resume()`, so the checkpoint will restore stale keys after the purge. `before_train` fires after `load_or_resume()` (inside `train_loop.run()`), so the purge sticks.
+
 ### Config System
 Configs are in `configs/sapiens_pose/<task>/`. All BEDLAM2 custom modules must be listed in `custom_imports` in the config to register them before the runner builds:
 ```python
