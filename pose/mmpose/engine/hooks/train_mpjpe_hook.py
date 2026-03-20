@@ -28,12 +28,14 @@ class TrainMPJPEAveragingHook(Hook):
         self._mpjpe_abs_buffer: list[float] = []
 
     def before_train(self, runner) -> None:
-        # Remove any stale 'mpjpe' / 'mpjpe_abs' keys that older checkpoints
-        # may have written directly into the MessageHub losses dict.
-        # Must run here (after load_or_resume) not in before_run (which fires
-        # before the checkpoint is loaded and would be overwritten).
-        for key in ('mpjpe', 'mpjpe_abs'):
-            runner.message_hub.log_scalars.pop(key, None)
+        # Remove stale 'mpjpe' / 'mpjpe_abs' keys that older checkpoints
+        # wrote directly into the MessageHub (as resumed HistoryBuffers).
+        # Must run here (after load_or_resume), not in before_run.
+        # Also clear _resumed_keys so they are not re-saved into future ckpts.
+        hub = runner.message_hub
+        for key in ('train/mpjpe', 'train/mpjpe_abs'):
+            hub.log_scalars.pop(key, None)
+            hub._resumed_keys.pop(key, None)
 
     def after_train_iter(
         self,
