@@ -583,10 +583,12 @@ class Pose3dVisualizationHook(Hook):
         with torch.no_grad():
             for flat_idx in frame_indices:
                 try:
-                    sample = dataset[flat_idx]
+                    sample = dataset.prepare_data(flat_idx)
                 except Exception as exc:
                     runner.logger.warning(
                         f'Pose3dVisHook: dataset[{flat_idx}] failed: {exc}')
+                    continue
+                if sample is None:
                     continue
 
                 inputs_4ch = sample['inputs']
@@ -656,8 +658,10 @@ class Pose3dVisualizationHook(Hook):
                     if sib_body == anchor_body:
                         continue
                     try:
-                        sib_d = dataset[sib_fi]
+                        sib_d = dataset.prepare_data(sib_fi)
                     except Exception:
+                        continue
+                    if sib_d is None:
                         continue
                     sib_inp = sib_d['inputs'].unsqueeze(0).to(device)
                     sib_ds = sib_d['data_samples']

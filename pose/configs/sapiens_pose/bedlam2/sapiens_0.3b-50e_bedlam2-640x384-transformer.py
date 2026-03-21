@@ -211,3 +211,6 @@ test_dataloader = dict(
 # ── Evaluators ────────────────────────────────────────────────────────────────
 val_evaluator = dict(type='BedlamMPJPEMetric')
 test_evaluator = dict(type='BedlamMPJPEMetric')
+
+# ── Reproducibility ───────────────────────────────────────────────────────────
+randomness = dict(seed=0)
