@@ -28,19 +28,21 @@ abs_joints = rel_joints + pelvis_abs
 
 Training MPJPE is computed with dropout on and augmentation applied. This is acceptable — purpose is gap monitoring, not exact measurement.
 
+**Status: COMPLETE** (commit 1800b43)
+
 ## Acceptance criteria
 
-- [ ] Head `loss()` returns `mpjpe_abs` (absolute MPJPE in mm, no gradient) alongside existing `mpjpe`
-- [ ] Absolute MPJPE uses crop K from `data_sample.metainfo['K']` for unprojection
-- [ ] New epoch-averaging hook registered in config
-- [ ] Hook writes `mpjpe/rel/train` and `mpjpe/abs/train` to TensorBoard at each epoch end
-- [ ] Hook resets accumulators at epoch start
-- [ ] `BedlamMPJPEMetric.process()` stores predicted pelvis_depth, pelvis_uv, and crop K
-- [ ] `BedlamMPJPEMetric.compute_metrics()` returns `mpjpe/abs/val` (all joints only, no body/hand split)
-- [ ] Training runs for 2+ epochs without errors
-- [ ] TensorBoard `mpjpe/rel/` panel shows both train and val curves
-- [ ] TensorBoard `mpjpe/abs/` panel shows both train and val curves
-- [ ] Absolute MPJPE values are larger than root-relative (sanity check)
+- [x] Head `loss()` returns `mpjpe_abs` (absolute MPJPE in mm, no gradient) alongside existing `mpjpe`
+- [x] Absolute MPJPE uses crop K from `data_sample.metainfo['K']` for unprojection
+- [x] New epoch-averaging hook registered in config
+- [x] Hook writes `mpjpe/rel/train` and `mpjpe/abs/train` to TensorBoard at each epoch end
+- [x] Hook resets accumulators at epoch start
+- [x] `BedlamMPJPEMetric.process()` stores predicted pelvis_depth, pelvis_uv, and crop K
+- [x] `BedlamMPJPEMetric.compute_metrics()` returns `mpjpe/abs/val` (all joints only, no body/hand split)
+- [x] Training runs for 2+ epochs without errors
+- [x] TensorBoard `mpjpe/rel/` panel shows both train and val curves
+- [x] TensorBoard `mpjpe/abs/` panel shows both train and val curves
+- [x] Absolute MPJPE values are larger than root-relative (sanity check)
 
 ## Blocked by
 

@@ -5,7 +5,7 @@
 
 ## Parent PRD
 
-`pose/docs/prd_transformer_decoder_head.md`
+`pose/docs/prd/transformer_decoder_head.md`
 
 ## What to build
 
@@ -23,17 +23,19 @@ Must expose the same `forward()`, `loss()`, and `predict()` interface as `Pose3d
 
 Unit tests at `pose/tests/test_models/test_heads/test_pose3d_transformer_head.py`.
 
+**Status: COMPLETE** (commit 1800b43)
+
 ## Acceptance criteria
 
-- [ ] `Pose3dTransformerHead` class implemented and registered via `@MODELS.register_module()`
-- [ ] `forward()` accepts `Tuple[Tensor]` (backbone features), returns dict with `joints (B, 70, 3)`, `pelvis_depth (B, 1)`, `pelvis_uv (B, 2)`
-- [ ] `loss()` accepts features + `batch_data_samples`, returns dict of finite scalar losses (`loss_joints`, `loss_depth`, `loss_uv`, `mpjpe`)
-- [ ] `predict()` returns list of `InstanceData` with `keypoints (1, J, 3)`, `keypoint_scores (1, J)`, `pelvis_depth (1,)`, `pelvis_uv (1, 2)`
-- [ ] 2D sinusoidal positional encoding is fixed (no learnable parameters)
-- [ ] Pelvis branches read from decoder output token 0 (not mean-pooled)
-- [ ] Joint queries predict root-relative directly (no subtraction in head)
-- [ ] Unit tests pass for `embed_dim=1024` and `embed_dim=1280`
-- [ ] Unit tests verify output shapes, finite losses, and predict format
+- [x] `Pose3dTransformerHead` class implemented and registered via `@MODELS.register_module()`
+- [x] `forward()` accepts `Tuple[Tensor]` (backbone features), returns dict with `joints (B, 70, 3)`, `pelvis_depth (B, 1)`, `pelvis_uv (B, 2)`
+- [x] `loss()` accepts features + `batch_data_samples`, returns dict of finite scalar losses (`loss_joints`, `loss_depth`, `loss_uv`, `mpjpe`)
+- [x] `predict()` returns list of `InstanceData` with `keypoints (1, J, 3)`, `keypoint_scores (1, J)`, `pelvis_depth (1,)`, `pelvis_uv (1, 2)`
+- [x] 2D sinusoidal positional encoding is fixed (no learnable parameters)
+- [x] Pelvis branches read from decoder output token 0 (not mean-pooled)
+- [x] Joint queries predict root-relative directly (no subtraction in head)
+- [x] Unit tests pass for `embed_dim=1024` and `embed_dim=1280`
+- [x] Unit tests verify output shapes, finite losses, and predict format
 
 ## User stories addressed
 

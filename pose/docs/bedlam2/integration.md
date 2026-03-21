@@ -1,5 +1,15 @@
 # BEDLAM2 RGBD 3D Pose Integration
 
+## Contents
+
+- [Background](#background)
+- [Architecture Mapping](#architecture-mapping)
+- [New Files](#new-files)
+- [Modified Files](#modified-files)
+- [Data Format](#data-format)
+- [Training Setup](#training-setup)
+- [Key Design Decisions](#key-design-decisions)
+
 This document describes the migration of `claude_code/` — a standalone RGBD 3D pose
 estimation project — into the official sapiens/mmpose/mmengine architecture.
 
@@ -144,65 +154,7 @@ which corrupts 3D camera-space joint coordinates.
 
 ## Training Setup
 
-### Prerequisites (one-time)
-
-```bash
-# 1. Extract JPEG frames from MP4 videos
-conda run -n sapiens_gpu python claude_code/scripts/extract_frames.py \
-    --data-root /media/s/SF_backup/bedlam2/ --workers 8
-
-# 2. Convert depth NPZ → NPY mmap (3× faster loading)
-conda run -n sapiens_gpu python claude_code/scripts/convert_depth_npy.py \
-    --data-root /media/s/SF_backup/bedlam2/ --workers 8
-
-# 3. Generate train/val/test split files
-conda run -n sapiens python pose/tools/generate_bedlam2_splits.py \
-    --data-root /media/s/SF_backup/bedlam2/ \
-    --output-dir pose/data/bedlam2_splits/
-# Writes: pose/data/bedlam2_splits/{train,val,test}_seqs.txt
-```
-
-### Training
-
-```bash
-cd /home/s/repos/sapiens
-conda run -n sapiens python pose/tools/train.py \
-    pose/configs/sapiens_pose/bedlam2/sapiens_0.3b-50e_bedlam2-640x384.py \
-    --work-dir /tmp/bedlam2_exp --amp
-```
-
-Override config values at the command line:
-
-```bash
-# Change data root
---cfg-options data_root=/other/path/bedlam2
-
-# Change pretrained checkpoint
---cfg-options pretrained_checkpoint=/path/to/sapiens_0.3b.pth
-
-# Change batch size
---cfg-options train_dataloader.batch_size=8
-```
-
-### Hyperparameters (defaults)
-
-| Parameter | Value |
-|-----------|-------|
-| Architecture | `sapiens_0.3b` (embed_dim=1024) |
-| Input resolution | 640×384 (H×W) |
-| Epochs | 50 |
-| Batch size | 16 |
-| Backbone LR | 1e-5 |
-| Head LR | 1e-4 |
-| Weight decay | 0.03 |
-| Warmup | 500 steps (linear) |
-| LR decay | Cosine |
-| Grad clip | max_norm=1.0 |
-| AMP | Enabled |
-| Loss | Smooth L1, β=0.05m |
-| Loss weights | depth=1.0, uv=1.0 |
-| Frame stride | 5 (30 fps → 6 fps) |
-| Split seed | 2026 |
+See **[training.md](training.md)** for the complete setup guide (prerequisites, training commands, evaluation, inference demo, and hyperparameter reference).
 
 ---
 

@@ -124,7 +124,7 @@ class MyModel: ...
 
 ## BEDLAM2 RGBD 3D Pose (Integrated)
 
-A custom RGBD 3D pose task has been integrated into the main `pose/` module (commit 4bba4a7). It predicts 70 active SMPL-X joints + pelvis depth/UV from 4-channel (RGB+D) input. **Accuracy verification is still pending.**
+A custom RGBD 3D pose task has been integrated into the main `pose/` module (commit 4bba4a7). It predicts 70 active SMPL-X joints + pelvis depth/UV from 4-channel (RGB+D) input. Two heads available: `Pose3dTransformerHead` (default, best results) and `Pose3dRegressionHead` (baseline). See `pose/docs/bedlam2/training_results.md` for A/B results.
 
 ### One-time data preprocessing (scripts still in `claude_code/`)
 ```bash
@@ -155,7 +155,8 @@ pose/scripts/demo/local/bedlam2.sh
 
 ### Architecture
 - **Backbone:** `SapiensBackboneRGBD` — 4-channel ViT (`pose/mmpose/models/backbones/sapiens_rgbd.py`)
-- **Head:** `Pose3DRegressionHead` — 3 branches: joints (70×3 m), pelvis_depth (m), pelvis_uv (normalized) (`pose/mmpose/models/heads/regression_heads/pose3d_regression_head.py`)
+- **Head (default):** `Pose3dTransformerHead` — transformer decoder, per-joint queries + cross-attention (`pose/mmpose/models/heads/regression_heads/pose3d_transformer_head.py`)
+- **Head (baseline):** `Pose3dRegressionHead` — GAP + MLP, 3 branches: joints (70×3 m), pelvis_depth (m), pelvis_uv (`pose/mmpose/models/heads/regression_heads/pose3d_regression_head.py`)
 - **Estimator:** Custom `RGBDPose3dEstimator` replaces `TopdownPoseEstimator` (skips 2D back-transform) (`pose/mmpose/models/pose_estimators/rgbd_pose3d.py`)
 - **Dataset:** `Bedlam2Dataset` — sequence-level splits, every 5th frame, mmap NPY depth (`pose/mmpose/datasets/datasets/body3d/bedlam2_dataset.py`)
 - **Metric:** MPJPE (mm) on body/hand/all joints (`pose/mmpose/evaluation/metrics/bedlam_metric.py`)
@@ -179,8 +180,8 @@ SmoothL1 (β=0.05m) on all 3 branches. Weights configurable: `--cfg-options lamb
 - Task docs: `docs/tasks/` (POSE, SEG, DEPTH, NORMAL, PRETRAIN READMEs)
 - Fine-tuning guides: `docs/finetune/`
 - Lite inference guides: `lite/docs/`
-- BEDLAM2 docs: `pose/docs/bedlam2/` (integration.md, training.md)
-- Pose design docs: `pose/docs/design/` (pipeline, dataload, visualization)
+- BEDLAM2 docs: `pose/docs/bedlam2/` (README.md → start here, training.md, integration.md, training_results.md)
+- Pose design docs: `pose/docs/design/` (pipeline.md → model/inference, data_transforms.md, training_loop.md, dataload.md, visualization.md)
 - PRDs & issues: `pose/docs/prd/`
 
 ## Docs Structure
@@ -209,25 +210,30 @@ docs/
 ### `pose/docs/` (pose-module-specific)
 ```
 pose/docs/
-├── README.md                   # Overview of pose docs
+├── README.md                   # Navigation hub with doc-layer explanation
 ├── bedlam2/
-│   ├── integration.md          # How BEDLAM2 was integrated into pose/
-│   └── training.md             # Training guide for BEDLAM2
+│   ├── README.md               # Start here for BEDLAM2 (quick links + reading order)
+│   ├── integration.md          # Architecture mapping, file locations, design decisions
+│   ├── training.md             # Training, eval, and inference guide
+│   └── training_results.md     # Per-epoch metrics for completed runs
 ├── design/
-│   ├── pipeline.md             # End-to-end model pipeline design
-│   ├── dataload.md             # Data loading architecture
-│   ├── visualization.md        # Skeleton/keypoint visualization
+│   ├── pipeline.md             # Model architecture + inference — read first
+│   ├── data_transforms.md      # Data format, coordinate system, transform chain
+│   ├── training_loop.md        # Optimizer, loss, metrics, TensorBoard tags
+│   ├── dataload.md             # Depth NPY conversion and loading performance
+│   ├── visualization.md        # Visualization hook and demo rendering
 │   ├── attention_pooling_pelvis.md  # Design: attention pooling for pelvis
-│   └── mpjpe_logging_investigation.md  # Investigation: MPJPE logging
+│   └── mpjpe_logging_investigation.md  # Investigation: invariant training MPJPE
 └── prd/
-    ├── transformer_decoder_head.md     # PRD: transformer decoder head
-    ├── tensorboard_restructure.md      # PRD: TensorBoard restructure
+    ├── transformer_decoder_head.md     # PRD: transformer decoder head (COMPLETE)
+    ├── tensorboard_restructure.md      # PRD: TensorBoard restructure (COMPLETE)
     └── issues/
-        ├── 001_transformer_decoder_head_module.md
-        ├── 002_training_config_smoke_test.md
-        ├── 003_ab_training_evaluation.md
-        ├── 004_restructure_tags.md
-        └── 005_absolute_mpjpe_and_epoch_avg.md
+        ├── 001_transformer_decoder_head_module.md  # COMPLETE
+        ├── 002_training_config_smoke_test.md        # COMPLETE
+        ├── 003_ab_training_evaluation.md            # IN PROGRESS
+        ├── 004_restructure_tags.md                  # COMPLETE
+        ├── 005_absolute_mpjpe_and_epoch_avg.md      # COMPLETE
+        └── 006_bedlam2_transform_testability.md     # RFC (open)
 ```
 
 ## Session Convention

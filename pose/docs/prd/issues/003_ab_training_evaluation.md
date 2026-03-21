@@ -5,7 +5,7 @@
 
 ## Parent PRD
 
-`pose/docs/prd_transformer_decoder_head.md`
+`pose/docs/prd/transformer_decoder_head.md`
 
 ## What to build
 
@@ -24,7 +24,7 @@ Success criterion: body MPJPE ≤ 75mm on 0.3b (≥5mm / ~7% relative improvemen
 - [ ] Full 50-epoch training completed on sapiens_0.3b with transformer decoder head
 - [ ] Validation MPJPE (body/hand/all) recorded at best checkpoint
 - [ ] Results compared against baseline in a table
-- [ ] `pose/docs/pipeline.md` Head section updated: status changed from "NOT YET IMPLEMENTED", results documented
+- [ ] `pose/docs/design/pipeline.md` Head section updated: status changed from "NOT YET IMPLEMENTED", results documented
 - [ ] Decision documented: keep transformer head, iterate, or revert based on results
 
 ## User stories addressed

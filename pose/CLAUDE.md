@@ -58,9 +58,10 @@ All components are registered via MMEngine's `Registry`. A new model/dataset/tra
 - **Head:** `HeatmapHead` or `DSNTHead` in `mmpose/models/heads/`
 - **Estimator:** `TopdownPoseEstimator` — applies 2D affine back-transform on predictions
 
-### BEDLAM2 RGBD 3D Pipeline (custom, accuracy pending)
+### BEDLAM2 RGBD 3D Pipeline (custom)
 - **Backbone:** `SapiensBackboneRGBD` (`mmpose/models/backbones/sapiens_rgbd.py`) — 4-channel (RGB+D) ViT
-- **Head:** `Pose3DRegressionHead` (`mmpose/models/heads/regression_heads/pose3d_regression_head.py`) — 3 output branches: 70 joints (×3 m), pelvis depth (m), pelvis UV (normalized)
+- **Head (default):** `Pose3dTransformerHead` (`mmpose/models/heads/regression_heads/pose3d_transformer_head.py`) — transformer decoder with per-joint query tokens + cross-attention; switch via `head.type` in config
+- **Head (baseline):** `Pose3dRegressionHead` (`mmpose/models/heads/regression_heads/pose3d_regression_head.py`) — GAP + MLP, 3 output branches: 70 joints (×3 m), pelvis depth (m), pelvis UV (normalized)
 - **Estimator:** `RGBDPose3dEstimator` (`mmpose/models/pose_estimators/rgbd_pose3d.py`) — skips 2D affine back-transform; joints are already in camera 3D space
 - **Dataset:** `Bedlam2Dataset` (`mmpose/datasets/datasets/body3d/bedlam2_dataset.py`) — indexes `(label_path, body_idx, frame_idx)` triples from NPZ files
 - **Metric:** MPJPE in mm on body/hand/all joint subsets (`mmpose/evaluation/metrics/bedlam_metric.py`)
@@ -92,7 +93,8 @@ custom_imports = dict(
 | Path | Purpose |
 |---|---|
 | `mmpose/models/backbones/sapiens_rgbd.py` | 4-channel RGBD ViT backbone |
-| `mmpose/models/heads/regression_heads/pose3d_regression_head.py` | 3D joint regression head |
+| `mmpose/models/heads/regression_heads/pose3d_transformer_head.py` | Transformer decoder head (default) |
+| `mmpose/models/heads/regression_heads/pose3d_regression_head.py` | GAP+MLP regression head (baseline) |
 | `mmpose/models/pose_estimators/rgbd_pose3d.py` | RGBD estimator (no 2D back-transform) |
 | `mmpose/datasets/datasets/body3d/bedlam2_dataset.py` | BEDLAM2 dataset class |
 | `mmpose/datasets/datasets/body3d/constants.py` | 70 active SMPL-X joint indices |
@@ -105,25 +107,30 @@ custom_imports = dict(
 ### Docs Structure (`pose/docs/`)
 ```
 pose/docs/
-├── README.md                   # Overview of pose docs
+├── README.md                   # Navigation hub with doc-layer explanation
 ├── bedlam2/
-│   ├── integration.md          # How BEDLAM2 was integrated into pose/
-│   └── training.md             # Training guide for BEDLAM2
+│   ├── README.md               # Start here for BEDLAM2 (quick links + reading order)
+│   ├── integration.md          # Architecture mapping, file locations, design decisions
+│   ├── training.md             # Training, eval, and inference guide
+│   └── training_results.md     # Per-epoch metrics for completed runs
 ├── design/
-│   ├── pipeline.md             # End-to-end model pipeline design — read first when starting work
-│   ├── dataload.md             # Data loading architecture
-│   ├── visualization.md        # Skeleton/keypoint visualization
+│   ├── pipeline.md             # Model architecture + inference — read first
+│   ├── data_transforms.md      # Data format, coordinate system, transform chain
+│   ├── training_loop.md        # Optimizer, loss, metrics, TensorBoard tags
+│   ├── dataload.md             # Depth NPY conversion and loading performance
+│   ├── visualization.md        # Visualization hook and demo rendering
 │   ├── attention_pooling_pelvis.md  # Design: attention pooling for pelvis
-│   └── mpjpe_logging_investigation.md  # Investigation: MPJPE logging
+│   └── mpjpe_logging_investigation.md  # Investigation: invariant training MPJPE
 └── prd/
-    ├── transformer_decoder_head.md     # PRD: transformer decoder head
-    ├── tensorboard_restructure.md      # PRD: TensorBoard restructure
+    ├── transformer_decoder_head.md     # PRD: transformer decoder head (COMPLETE)
+    ├── tensorboard_restructure.md      # PRD: TensorBoard restructure (COMPLETE)
     └── issues/
-        ├── 001_transformer_decoder_head_module.md
-        ├── 002_training_config_smoke_test.md
-        ├── 003_ab_training_evaluation.md
-        ├── 004_restructure_tags.md
-        └── 005_absolute_mpjpe_and_epoch_avg.md
+        ├── 001_transformer_decoder_head_module.md  # COMPLETE
+        ├── 002_training_config_smoke_test.md        # COMPLETE
+        ├── 003_ab_training_evaluation.md            # IN PROGRESS
+        ├── 004_restructure_tags.md                  # COMPLETE
+        ├── 005_absolute_mpjpe_and_epoch_avg.md      # COMPLETE
+        └── 006_bedlam2_transform_testability.md     # RFC (open)
 ```
 
 Project-wide docs (task guides, finetune, update logs) are in `../docs/` — see root `CLAUDE.md` for structure.

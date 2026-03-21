@@ -26,15 +26,17 @@ End-to-end:
 | `{split}/{scene}/gt_pelvis` | `video/{split}/{scene}/gt_pelvis` |
 | `{split}/{scene}/pred_pelvis` | `video/{split}/{scene}/pred_pelvis` |
 
+**Status: COMPLETE** (commit 1800b43)
+
 ## Acceptance criteria
 
-- [ ] Head `loss()` returns `loss/joints/train`, `loss/depth/train`, `loss/uv/train` instead of `loss_joints`, `loss_depth`, `loss_uv`
-- [ ] `BedlamMPJPEMetric` returns `mpjpe/rel/val`, `mpjpe/body/val`, `mpjpe/hand/val`
-- [ ] Config `save_best='mpjpe/body/val'` and `monitor='mpjpe/body/val'`
-- [ ] Visualization hook video tags prefixed with `video/`
-- [ ] Training runs for 1 epoch without errors
-- [ ] TensorBoard shows all scalars under new tag names
-- [ ] MMEngine-managed tags (lr, grad_norm, etc.) unchanged
+- [x] Head `loss()` returns `loss/joints/train`, `loss/depth/train`, `loss/uv/train` instead of `loss_joints`, `loss_depth`, `loss_uv`
+- [x] `BedlamMPJPEMetric` returns `mpjpe/rel/val`, `mpjpe/body/val`, `mpjpe/hand/val`
+- [x] Config `save_best='mpjpe/body/val'` and `monitor='mpjpe/body/val'`
+- [x] Visualization hook video tags prefixed with `video/`
+- [x] Training runs for 1 epoch without errors
+- [x] TensorBoard shows all scalars under new tag names
+- [x] MMEngine-managed tags (lr, grad_norm, etc.) unchanged
 
 ## Blocked by
 

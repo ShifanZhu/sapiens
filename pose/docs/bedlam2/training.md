@@ -7,10 +7,10 @@ depth + pelvis UV from RGBD crops.
 
 ## Environment
 
-Use the `sapiens_lite` conda environment for all steps.
+Use the `sapiens` conda environment for all steps.
 
 ```bash
-conda activate sapiens_lite
+conda activate sapiens
 ```
 
 ---
@@ -33,7 +33,9 @@ bedlam2/
   data/
     frames/     # RGB frames  (*.jpg / *.png)
     label/      # SMPL-X annotations (*.npz)
-    depth_npy/  # Depth maps (*.npy)
+    depth/
+      npy/      # Depth maps (*.npy, mmap-ready)
+      npz/      # Depth maps (*.npz, fallback)
 ```
 
 ### 2. Pretrained checkpoint
@@ -179,4 +181,4 @@ Output PNGs are saved to `--output-root/<seq_name>/<frame_idx>_body<body_idx>.pn
 | `pose/scripts/demo/local/bedlam2.sh` | Demo launch script |
 | `pose/data/bedlam2_splits/` | Train / val / test sequence lists |
 
-For architecture and integration details see `docs/BEDLAM2_INTEGRATION.md`.
+For architecture and integration details see [bedlam2/integration.md](integration.md).
