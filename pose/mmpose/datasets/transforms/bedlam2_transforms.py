@@ -84,7 +84,7 @@ _FLIP_PAIRS = (
 
 _RGB_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
 _RGB_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
-_DEPTH_MAX_METERS = 20.0
+_DEPTH_MAX_METERS = 10.0
 _MIN_BBOX_PX = 32
 
 
@@ -139,8 +139,9 @@ class LoadBedlamLabels(BaseTransform):
     dict by ``Bedlam2Dataset.load_data_list``.
 
     Filtering behaviour (returns ``None`` to trigger MMEngine retry):
-      - OOB: more than 70% of joints outside the full image bounds.
+      - OOB: 50% or more of joints outside the full image bounds.
       - Tiny bbox: width or height < 32 pixels.
+      - Far person: all joints at depth >= _DEPTH_MAX_METERS (10 m).
 
     Args:
         depth_required (bool): Raise if depth is missing. Default True.
@@ -213,11 +214,17 @@ class LoadBedlamLabels(BaseTransform):
             kpts = joints_2d[body_idx, frame_idx]
             x_oob = (kpts[:, 0] < 0) | (kpts[:, 0] >= W_raw)
             y_oob = (kpts[:, 1] < 0) | (kpts[:, 1] >= H_raw)
-            if float(np.sum(x_oob | y_oob)) / kpts.shape[0] > 0.70:
+            if float(np.sum(x_oob | y_oob)) / kpts.shape[0] >= 0.50:
                 return None   # trigger retry
 
         # ── Reduce to active joints ────────────────────────────────────────
         joints = joints_raw[_ACTIVE_JOINT_INDICES]   # (70, 3)
+
+        # ── Far-person filter ──────────────────────────────────────────────
+        # X is the forward/depth axis in BEDLAM2 camera space.
+        # Skip samples where every joint is at or beyond _DEPTH_MAX_METERS.
+        if self.filter_invalid and np.all(joints[:, 0] >= _DEPTH_MAX_METERS):
+            return None   # trigger retry
 
         # ── Depth ─────────────────────────────────────────────────────────
         npy_path = results['depth_npy_path']

@@ -39,6 +39,8 @@ from typing import List, Optional
 import numpy as np
 from mmengine.dataset import BaseDataset
 
+from mmpose.datasets.transforms.bedlam2_transforms import (
+    _ACTIVE_JOINT_INDICES, _DEPTH_MAX_METERS)
 from mmpose.registry import DATASETS
 
 
@@ -134,12 +136,28 @@ class Bedlam2Dataset(BaseDataset):
             try:
                 with np.load(label_path, allow_pickle=True) as meta:
                     n_frames_raw = int(meta['n_frames'])
-                    n_body = int(meta['joints_cam'].shape[0])
+                    joints_cam_all = meta['joints_cam'].astype(
+                        np.float32)   # (n_body, n_frames_raw, 127, 3)
+                    n_body = int(joints_cam_all.shape[0])
                     folder_name = str(meta['folder_name'])
                     seq_name = str(meta['seq_name'])
+                    intrinsic = meta['intrinsic_matrix'].astype(
+                        np.float32)   # (3, 3)
+                    joints_2d_all = (
+                        meta['joints_2d'].astype(np.float32)
+                        if 'joints_2d' in meta else None
+                    )  # (n_body, n_frames_raw, 127, 2) or None
             except Exception as e:
                 raise RuntimeError(
                     f'Failed to read label {label_path}: {e}') from e
+
+            # Active-joint X-coords: (n_body, n_frames_raw, 70)
+            joints_x = joints_cam_all[:, :, _ACTIVE_JOINT_INDICES, 0]
+
+            # Image dims inferred from intrinsic principal point (exact for
+            # BEDLAM2 synthetic renders where principal point is centred).
+            W_raw = int(round(intrinsic[0, 2] * 2))
+            H_raw = int(round(intrinsic[1, 2] * 2))
 
             # Frame indices after downsampling
             frame_indices = list(range(0, n_frames_raw, self._frame_stride))
@@ -151,6 +169,18 @@ class Bedlam2Dataset(BaseDataset):
 
             for body_idx in range(n_body):
                 for frame_idx in frame_indices:
+                    # Skip samples where every active joint is >= max depth
+                    if np.all(joints_x[body_idx, frame_idx] >= _DEPTH_MAX_METERS):
+                        continue
+
+                    # Skip samples where >= 50% of joints are OOB
+                    if joints_2d_all is not None:
+                        kpts = joints_2d_all[body_idx, frame_idx]  # (127, 2)
+                        x_oob = (kpts[:, 0] < 0) | (kpts[:, 0] >= W_raw)
+                        y_oob = (kpts[:, 1] < 0) | (kpts[:, 1] >= H_raw)
+                        if float(np.sum(x_oob | y_oob)) / kpts.shape[0] >= 0.50:
+                            continue
+
                     img_path = os.path.join(
                         frames_root, folder_name, seq_name,
                         f'{frame_idx:05d}.jpg')
