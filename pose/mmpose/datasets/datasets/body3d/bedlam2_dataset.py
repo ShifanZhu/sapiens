@@ -32,16 +32,24 @@ Usage in config::
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
+import pickle
+import tempfile
+import time
 from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
 from mmengine.dataset import BaseDataset
+from mmengine.logging import print_log
 
 from mmpose.datasets.transforms.bedlam2_transforms import (
     _ACTIVE_JOINT_INDICES, _DEPTH_MAX_METERS)
 from mmpose.registry import DATASETS
+
+_BEDLAM2_INDEX_CACHE_VERSION = 2
 
 
 @DATASETS.register_module()
@@ -67,6 +75,13 @@ class Bedlam2Dataset(BaseDataset):
             from 30 fps source).
         max_seqs (int, optional): Truncate to this many sequences. Useful
             for quick smoke-tests to avoid indexing the full dataset.
+        use_cache (bool): Whether to reuse a cached flattened sample index.
+            Default True.
+        cache_dir (str, optional): Directory for cached sample indices.
+            Defaults to ``$BEDLAM2_INDEX_CACHE_DIR`` if set, otherwise
+            ``~/.cache/sapiens/bedlam2_index``.
+        log_interval (int): Progress log interval, in sequences, while
+            building the sample index. Default 25.
         pipeline (list): Data transform pipeline.
         metainfo (dict): Dataset metainfo (from
             ``configs/_base_/datasets/bedlam2_smplx70.py``).
@@ -85,6 +100,9 @@ class Bedlam2Dataset(BaseDataset):
         seq_paths_file: Optional[str] = None,
         frame_stride: int = 5,
         max_seqs: Optional[int] = None,
+        use_cache: bool = True,
+        cache_dir: Optional[str] = None,
+        log_interval: int = 25,
         pipeline: list = [],
         metainfo: Optional[dict] = None,
         test_mode: bool = False,
@@ -98,6 +116,14 @@ class Bedlam2Dataset(BaseDataset):
 
         self._data_root = data_root
         self._frame_stride = frame_stride
+        self._use_cache = use_cache
+        self._cache_dir = (
+            cache_dir
+            or os.environ.get('BEDLAM2_INDEX_CACHE_DIR')
+            or os.path.join(
+                os.path.expanduser('~'), '.cache', 'sapiens', 'bedlam2_index')
+        )
+        self._log_interval = max(int(log_interval), 1)
 
         # Resolve sequence paths
         if seq_paths_file is not None:
@@ -116,6 +142,93 @@ class Bedlam2Dataset(BaseDataset):
             **kwargs,
         )
 
+    def _cache_path(self) -> Path:
+        """Return the cache path for the current dataset slice."""
+        digest = hashlib.sha1()
+        digest.update(str(_BEDLAM2_INDEX_CACHE_VERSION).encode('utf-8'))
+        digest.update(os.path.realpath(self._data_root).encode('utf-8'))
+        digest.update(str(self._frame_stride).encode('utf-8'))
+        digest.update(str(int(self.test_mode)).encode('utf-8'))
+        for seq_rel in self._seq_paths:
+            digest.update(seq_rel.encode('utf-8'))
+            digest.update(b'\0')
+        return Path(self._cache_dir).expanduser() / f'{digest.hexdigest()}.pkl'
+
+    def _load_cached_data_list(self) -> Optional[List[dict]]:
+        """Load a cached flattened sample index, if available."""
+        if not self._use_cache:
+            return None
+
+        cache_path = self._cache_path()
+        if not cache_path.is_file():
+            return None
+
+        t0 = time.time()
+        try:
+            with cache_path.open('rb') as f:
+                payload = pickle.load(f)
+            data_list = payload.get('data_list')
+            if not isinstance(data_list, list):
+                raise TypeError('cache payload missing data_list')
+            print_log(
+                'BEDLAM2 index cache hit: '
+                f'{len(data_list)} samples loaded from {cache_path} '
+                f'in {time.time() - t0:.1f}s',
+                logger='current',
+                level=logging.INFO,
+            )
+            return data_list
+        except Exception as exc:
+            print_log(
+                f'BEDLAM2 index cache read failed at {cache_path}: {exc}',
+                logger='current',
+                level=logging.WARNING,
+            )
+            return None
+
+    def _save_cached_data_list(self, data_list: List[dict]) -> None:
+        """Persist the flattened sample index for future launches."""
+        if not self._use_cache:
+            return
+
+        cache_path = self._cache_path()
+        tmp_path = None
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = dict(
+                version=_BEDLAM2_INDEX_CACHE_VERSION,
+                data_root=os.path.realpath(self._data_root),
+                frame_stride=self._frame_stride,
+                test_mode=self.test_mode,
+                seq_count=len(self._seq_paths),
+                sample_count=len(data_list),
+                data_list=data_list,
+            )
+            with tempfile.NamedTemporaryFile(
+                mode='wb',
+                dir=cache_path.parent,
+                prefix=f'{cache_path.stem}.',
+                suffix='.tmp',
+                delete=False,
+            ) as f:
+                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+                tmp_path = Path(f.name)
+            os.replace(tmp_path, cache_path)
+            print_log(
+                'BEDLAM2 index cache saved: '
+                f'{len(data_list)} samples -> {cache_path}',
+                logger='current',
+                level=logging.INFO,
+            )
+        except Exception as exc:
+            print_log(
+                f'BEDLAM2 index cache write failed at {cache_path}: {exc}',
+                logger='current',
+                level=logging.WARNING,
+            )
+            if tmp_path is not None and tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+
     def load_data_list(self) -> List[dict]:
         """Build the flat sample index from NPZ label files.
 
@@ -124,29 +237,43 @@ class Bedlam2Dataset(BaseDataset):
             triple.  Each dict contains all keys needed by
             ``LoadBedlamLabels``.
         """
+        cached_data_list = self._load_cached_data_list()
+        if cached_data_list is not None:
+            return cached_data_list
+
         data_list = []
         label_root = os.path.join(self._data_root, 'data', 'label')
         depth_npy_root = os.path.join(self._data_root, 'data', 'depth', 'npy')
         depth_npz_root = os.path.join(self._data_root, 'data', 'depth', 'npz')
         frames_root = os.path.join(self._data_root, 'data', 'frames')
 
+        total_seqs = len(self._seq_paths)
+        build_t0 = time.time()
+        print_log(
+            'BEDLAM2 index build starting: '
+            f'{total_seqs} sequences from {label_root}',
+            logger='current',
+            level=logging.INFO,
+        )
+
         sample_id = 0
-        for seq_rel in self._seq_paths:
+        for seq_idx, seq_rel in enumerate(self._seq_paths, start=1):
             label_path = os.path.join(label_root, seq_rel)
+            seq_t0 = time.time()
             try:
                 with np.load(label_path, allow_pickle=True) as meta:
-                    n_frames_raw = int(meta['n_frames'])
-                    joints_cam_all = meta['joints_cam'].astype(
-                        np.float32)   # (n_body, n_frames_raw, 127, 3)
+                    n_frames_raw = int(np.asarray(meta['n_frames']).reshape(-1)[0])
+                    joints_cam_all = meta['joints_cam']  # (n_body, n_frames_raw, 127, 3)
                     n_body = int(joints_cam_all.shape[0])
-                    folder_name = str(meta['folder_name'])
-                    seq_name = str(meta['seq_name'])
-                    intrinsic = meta['intrinsic_matrix'].astype(
-                        np.float32)   # (3, 3)
-                    joints_2d_all = (
-                        meta['joints_2d'].astype(np.float32)
-                        if 'joints_2d' in meta else None
-                    )  # (n_body, n_frames_raw, 127, 2) or None
+                    folder_name = str(np.asarray(meta['folder_name']).item())
+                    seq_name = str(np.asarray(meta['seq_name']).item())
+                    intrinsic = np.asarray(
+                        meta['intrinsic_matrix'], dtype=np.float32)
+                    # (3, 3) or (n_frames, 3, 3)
+                    if intrinsic.ndim == 3:
+                        intrinsic = intrinsic[0]
+                    joints_2d_all = meta['joints_2d'] if 'joints_2d' in meta else None
+                    # (n_body, n_frames_raw, 127, 2) or None
             except Exception as e:
                 raise RuntimeError(
                     f'Failed to read label {label_path}: {e}') from e
@@ -156,8 +283,11 @@ class Bedlam2Dataset(BaseDataset):
 
             # Image dims inferred from intrinsic principal point (exact for
             # BEDLAM2 synthetic renders where principal point is centred).
-            W_raw = int(round(intrinsic[0, 2] * 2))
-            H_raw = int(round(intrinsic[1, 2] * 2))
+            # Coerce to plain floats — builtin round() fails on NumPy 2.x ndarray scalars.
+            cx = float(np.asarray(intrinsic[0, 2]).reshape(-1)[0])
+            cy = float(np.asarray(intrinsic[1, 2]).reshape(-1)[0])
+            W_raw = int(round(cx * 2))
+            H_raw = int(round(cy * 2))
 
             # Frame indices after downsampling
             frame_indices = list(range(0, n_frames_raw, self._frame_stride))
@@ -166,6 +296,19 @@ class Bedlam2Dataset(BaseDataset):
                 depth_npy_root, folder_name, f'{seq_name}.npy')
             depth_npz_path = os.path.join(
                 depth_npz_root, folder_name, f'{seq_name}.npz')
+            # Some releases store depth as data/depth/<folder>/<seq>.npy (no npy/ subdir).
+            if not os.path.isfile(depth_npy_path):
+                alt_npy = os.path.join(
+                    self._data_root, 'data', 'depth', folder_name,
+                    f'{seq_name}.npy')
+                if os.path.isfile(alt_npy):
+                    depth_npy_path = alt_npy
+            if not os.path.isfile(depth_npz_path):
+                alt_npz = os.path.join(
+                    self._data_root, 'data', 'depth', folder_name,
+                    f'{seq_name}.npz')
+                if os.path.isfile(alt_npz):
+                    depth_npz_path = alt_npz
 
             for body_idx in range(n_body):
                 for frame_idx in frame_indices:
@@ -199,4 +342,29 @@ class Bedlam2Dataset(BaseDataset):
                     ))
                     sample_id += 1
 
+            seq_elapsed = time.time() - seq_t0
+            if seq_elapsed >= 5.0:
+                print_log(
+                    'BEDLAM2 slow label during index build: '
+                    f'{seq_rel} took {seq_elapsed:.1f}s',
+                    logger='current',
+                    level=logging.WARNING,
+                )
+            if seq_idx % self._log_interval == 0 or seq_idx == total_seqs:
+                elapsed = time.time() - build_t0
+                print_log(
+                    'BEDLAM2 index progress: '
+                    f'{seq_idx}/{total_seqs} sequences, '
+                    f'{sample_id} samples, {elapsed:.1f}s elapsed',
+                    logger='current',
+                    level=logging.INFO,
+                )
+
+        elapsed = time.time() - build_t0
+        print_log(
+            f'BEDLAM2 index build complete: {sample_id} samples in {elapsed:.1f}s',
+            logger='current',
+            level=logging.INFO,
+        )
+        self._save_cached_data_list(data_list)
         return data_list
