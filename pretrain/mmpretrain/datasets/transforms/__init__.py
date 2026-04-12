@@ -15,6 +15,7 @@ from .auto_augment import (AutoAugment, AutoContrast, BaseAugTransform,
                            SolarizeAdd, Translate)
 from .formatting import (Collect, NumpyToPIL, PackInputs, PackMultiTaskInputs,
                          PILToNumpy, Transpose)
+from .lidar_hmr_points import DummySingleClsLabel, RandomHumanPointsPlaceholder
 from .processing import (Albumentations, BEiTMaskGenerator, CleanCaption,
                          ColorJitter, EfficientNetCenterCrop,
                          EfficientNetRandomCrop, Lighting,
@@ -30,6 +31,8 @@ for t in (CenterCrop, LoadImageFromFile, Normalize, RandomFlip,
     TRANSFORMS.register_module(module=t)
 
 __all__ = [
+    'DummySingleClsLabel',
+    'RandomHumanPointsPlaceholder',
     'NumpyToPIL', 'PILToNumpy', 'Transpose', 'Collect', 'RandomCrop',
     'RandomResizedCrop', 'Shear', 'Translate', 'Rotate', 'Invert',
     'ColorTransform', 'Solarize', 'Posterize', 'AutoContrast', 'Equalize',

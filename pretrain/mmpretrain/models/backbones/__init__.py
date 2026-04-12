@@ -61,6 +61,8 @@ from .vgg import VGG
 from .vig import PyramidVig, Vig
 from .vision_transformer import VisionTransformer, TransformerEncoderLayer
 from .vision_transformer_with_depth import VisionTransformerWithDepth
+from ..utils import lidar_hmr_meshgraphormer  # noqa: F401  # LiDAR-HMR encoder registry
+from ..utils import lidar_hmr_tokens  # noqa: F401  # LiDARHMRVertFeatProjector registry
 from .vision_transformer2 import VisionTransformer2
 from .vit_eva02 import ViTEVA02
 from .vit_sam import ViTSAM

@@ -47,7 +47,7 @@ pretrained_checkpoint = '../pretrain/checkpoints/sapiens_0.3b/sapiens_0.3b_epoch
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 data_root = __import__('os').path.expanduser(
-    __import__('os').environ.get('BEDLAM2_DATA_ROOT', '~/repos_local/MMC/BEDLAM2Datatest/data'))
+    __import__('os').environ.get('BEDLAM2_DATA_ROOT', '/media/s/Crucial X10/BEDLAM2'))
 splits_dir = 'data/bedlam2_splits'
 
 # ── Training schedule ─────────────────────────────────────────────────────────

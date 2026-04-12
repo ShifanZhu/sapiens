@@ -13,13 +13,19 @@ DATASET='bedlam2'
 MODEL="sapiens_0.3b-50e_${DATASET}-640x384"
 JOB_NAME="pose_$MODEL"
 TRAIN_BATCH_SIZE_PER_GPU=2
+LOAD_FROM=''
 
 RESUME_FROM=''
 LOAD_FROM=''
 
-# Data root: set BEDLAM2_DATA_ROOT env var to override, e.g.:
-#   BEDLAM2_DATA_ROOT=/data/bedlam2 bash node.sh
-DATA_ROOT="${BEDLAM2_DATA_ROOT:-}"
+# BEDLAM2: ``BEDLAM2_DATA_ROOT`` = parent of ``data/`` (NOT ``.../BEDLAM2/data``).
+# On-disk example (same machine):
+#   /media/s/Crucial X10/BEDLAM2/data/label/<scene>/seq_*.npz
+#   /media/s/Crucial X10/BEDLAM2/data/depth/<scene>/seq_*.npy   (or depth/npy/...)
+#   /media/s/Crucial X10/BEDLAM2/data/frames/<scene>/<seq>/<frame>.jpg
+# Export:
+export BEDLAM2_DATA_ROOT="${BEDLAM2_DATA_ROOT:-/media/s/Crucial X10/BEDLAM2}"
+# Config reads os.environ['BEDLAM2_DATA_ROOT']; export avoids --cfg-options + spaces.
 
 ##---------------------------------------------------------------
 # mode='debug'
@@ -31,13 +37,21 @@ OUTPUT_DIR="Outputs/train/${DATASET}/${MODEL}/node"
 OUTPUT_DIR="$(echo "${OUTPUT_DIR}/$(date +"%m-%d-%Y_%H:%M:%S")")"
 
 ###--------------------------------------------------------------
-DATA_ROOT_OPT=""
-[ -n "$DATA_ROOT" ] && DATA_ROOT_OPT="data_root=$DATA_ROOT"
+# Do not pass data_root via --cfg-options: spaces in the path break tokenization.
+# Override data root: BEDLAM2_DATA_ROOT=/other/path bash node.sh
+
+# Optional: Rome tracking subset from repo-root ``splits_rome_tracking.json`` (100 seqs).
+# Generated lists under ``pose/data/bedlam2_splits/``:
+#   rome_tracking_train_seqs.txt (90) + rome_tracking_val_seqs.txt (10), or
+#   rome_tracking_all100_seqs.txt (100) with ``--no-validate`` for train-only.
+# Example extra cfg-options (append to OPTIONS when using):
+#   train_dataloader.dataset.seq_paths_file=data/bedlam2_splits/rome_tracking_train_seqs.txt \
+#   val_dataloader.dataset.seq_paths_file=data/bedlam2_splits/rome_tracking_val_seqs.txt
 
 if [ -n "$LOAD_FROM" ]; then
-    OPTIONS="train_dataloader.batch_size=$TRAIN_BATCH_SIZE_PER_GPU load_from=$LOAD_FROM $DATA_ROOT_OPT"
+    OPTIONS="train_dataloader.batch_size=$TRAIN_BATCH_SIZE_PER_GPU load_from=$LOAD_FROM"
 else
-    OPTIONS="train_dataloader.batch_size=$TRAIN_BATCH_SIZE_PER_GPU $DATA_ROOT_OPT"
+    OPTIONS="train_dataloader.batch_size=$TRAIN_BATCH_SIZE_PER_GPU"
 fi
 
 if [ -n "$RESUME_FROM" ]; then

@@ -25,7 +25,8 @@ from .vision_transformer import VisionTransformer
 class VisionTransformerWithDepth(VisionTransformer):
     """Vision Transformer with Depth Embeddings Support
     
-    This extends VisionTransformer to add depth embeddings from Point-MAE encoder.
+    This extends VisionTransformer to add depth embeddings from an external geometry
+    encoder (e.g. Point-MAE-style tokens, or LiDAR-HMR ``vert_feat`` pooled to tokens).
     The depth embeddings can have any number of tokens (e.g., 26 tokens with 1024 dimensions).
     We project them to match the RGB embedding dimension (like 1536 for sapiens_1b), 
     then concatenate with RGB patch tokens before the transformer processes everything.
@@ -53,6 +54,11 @@ class VisionTransformerWithDepth(VisionTransformer):
         share_pos_embed_with_rgb (bool): If True, depth tokens share position embeddings with RGB
             patches (for pixel-aligned depth). If False, use separate learnable position embeddings.
             Defaults to True (since depth is pixel-by-pixel aligned with RGB).
+        use_lidar_hmr_depth (bool): If True, build ``lidar_hmr_encoder`` and prefer live
+            ``point_clouds`` in :meth:`forward` (actual LiDAR-HMR ``pose_meshgraphormer``).
+        lidar_hmr_encoder (dict, optional): Config for
+            :class:`~mmpretrain.models.utils.lidar_hmr_meshgraphormer.LiDARHMRPoseMeshGraphormerEncoder`.
+            Required when ``use_lidar_hmr_depth`` is True.
         **kwargs: Same args as VisionTransformer.
     """
     
@@ -64,6 +70,8 @@ class VisionTransformerWithDepth(VisionTransformer):
                  default_num_depth_tokens: Optional[int] = None,
                  depth_token_drop_rate: float = 0.0,
                  share_pos_embed_with_rgb: bool = True,
+                 use_lidar_hmr_depth: bool = False,
+                 lidar_hmr_encoder: Optional[dict] = None,
                  **kwargs):
         # First call the parent VisionTransformer init
         super(VisionTransformerWithDepth, self).__init__(**kwargs)
@@ -122,6 +130,20 @@ class VisionTransformerWithDepth(VisionTransformer):
             self.depth_pos_embed = nn.Parameter(
                 torch.zeros(1, max_depth_tokens, self.embed_dims))
             trunc_normal_(self.depth_pos_embed, std=0.02)
+
+        self.use_lidar_hmr_depth = use_lidar_hmr_depth
+        if use_lidar_hmr_depth:
+            if not lidar_hmr_encoder:
+                raise ValueError(
+                    'use_lidar_hmr_depth=True requires a lidar_hmr_encoder config dict.')
+            # Side effect: registers ``LiDARHMRPoseMeshGraphormerEncoder`` with MODELS.
+            import mmpretrain.models.utils.lidar_hmr_meshgraphormer  # noqa: F401
+            # Nested build must not follow Runner's DefaultScope (e.g. mmpose).
+            lh_cfg = dict(lidar_hmr_encoder)
+            lh_cfg.setdefault('_scope_', 'mmpretrain')
+            self.lidar_hmr_encoder = MODELS.build(lh_cfg)
+        else:
+            self.lidar_hmr_encoder = None
         
     def load_depth_embedding(self, image_name: str) -> Optional[torch.Tensor]:
         """Load depth embedding from .npy file
@@ -176,7 +198,7 @@ class VisionTransformerWithDepth(VisionTransformer):
         print(f"Warning: Depth embedding not found for {base_name} in {self.depth_embed_path}")
         return None
     
-    def forward(self, x, depth_embeddings=None, image_names=None):
+    def forward(self, x, depth_embeddings=None, image_names=None, point_clouds=None):
         """Forward pass with depth embeddings integration
         MAIN FUNCTION
         
@@ -193,6 +215,9 @@ class VisionTransformerWithDepth(VisionTransformer):
                 will try to load from disk using image_names.
             image_names (list[str], optional): List of image names for loading depth embeddings.
                 Only used if depth_embeddings is None. Should match batch size.
+            point_clouds (torch.Tensor, optional): If ``lidar_hmr_encoder`` is set, per-batch
+                points ``(B, N, 3)`` (e.g. LiDAR-HMR ``human_points_local``). Used when
+                ``depth_embeddings`` is None, before on-disk ``depth_embed_path`` loading.
                 
         Returns:
             tuple: Output features as defined by out_type (same as VisionTransformer)
@@ -207,6 +232,17 @@ class VisionTransformerWithDepth(VisionTransformer):
         num_rgb_patches = x_rgb.shape[1]  # Usually 4096 for 1024×1024 images
         
         # Stage 2: Load/Process Depth Embeddings (new part)
+        if (depth_embeddings is None and self.lidar_hmr_encoder is not None
+                and point_clouds is not None):
+            if point_clouds.dim() != 3 or point_clouds.size(-1) != 3:
+                raise ValueError(
+                    f'point_clouds must be (B, N, 3), got {tuple(point_clouds.shape)}')
+            if point_clouds.size(0) != B:
+                raise ValueError(
+                    f'point_clouds batch {point_clouds.size(0)} != image batch {B}')
+            depth_embeddings = self.lidar_hmr_encoder(
+                point_clouds.to(device=x.device, dtype=torch.float32))
+
         if depth_embeddings is None and self.depth_embed_path is not None:
             # Try loading depth embeddings from disk using image names
             if image_names is not None:
@@ -257,7 +293,7 @@ class VisionTransformerWithDepth(VisionTransformer):
         # Stage 3: Project Depth Embeddings (new part)
         if depth_embeddings is not None:
             # Project depth embeddings to match RGB embedding dimension
-            # Input: (B, num_depth_tokens, depth_embed_dim) - depth embeddings from Point-MAE
+            # Input: (B, num_depth_tokens, depth_embed_dim) - depth latents (Point-MAE, LiDAR-HMR, etc.)
             # Output: (B, num_depth_tokens, embed_dim) - projected to match RGB dimension
             depth_embeddings = self.depth_proj(depth_embeddings)
             num_depth_tokens = depth_embeddings.shape[1]  # Get actual number from tensor

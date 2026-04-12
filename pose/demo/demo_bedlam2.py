@@ -19,6 +19,7 @@ Usage::
         /path/to/checkpoint.pth \\
         --data-root /media/s/SF_backup/bedlam2 \\
         --seq-paths-file data/bedlam2_splits/test_seqs.txt \\
+        --max-seqs 32 \\
         --output-root Outputs/demo/bedlam2 \\
         --num-samples 200 \\
         --batch-size 8 \\
@@ -30,6 +31,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+from typing import Optional
 
 import cv2
 import matplotlib
@@ -225,11 +227,14 @@ def build_model(config_file: str, checkpoint: str, device: str):
 
 # ── Build dataset ──────────────────────────────────────────────────────────────
 
-def build_val_dataset(cfg, data_root: str, seq_paths_file: str):
+def build_val_dataset(cfg, data_root: str, seq_paths_file: str,
+                      max_seqs: Optional[int] = None):
     """Build a Bedlam2Dataset with the val (no-augmentation) pipeline."""
     ds_cfg = cfg.val_dataloader.dataset.copy()
     ds_cfg['data_root'] = data_root
     ds_cfg['seq_paths_file'] = seq_paths_file
+    if max_seqs is not None:
+        ds_cfg['max_seqs'] = max_seqs
     return DATASETS.build(ds_cfg)
 
 
@@ -243,6 +248,9 @@ def parse_args():
                    help='BEDLAM2 data root (contains data/label/, data/frames/, etc.)')
     p.add_argument('--seq-paths-file', default='data/bedlam2_splits/test_seqs.txt',
                    help='Text file with one sequence path per line')
+    p.add_argument('--max-seqs', type=int, default=None,
+                   help='Use only the first N sequences from the file (speeds up '
+                   'indexing; full test split can take many minutes to scan)')
     p.add_argument('--output-root', default='Outputs/demo/bedlam2',
                    help='Directory to save output PNGs')
     p.add_argument('--num-samples', type=int, default=200,
@@ -262,7 +270,8 @@ def main():
     model = build_model(args.config, args.checkpoint, args.device)
 
     print(f'Building dataset from {args.seq_paths_file} ...')
-    dataset = build_val_dataset(cfg, args.data_root, args.seq_paths_file)
+    dataset = build_val_dataset(
+        cfg, args.data_root, args.seq_paths_file, max_seqs=args.max_seqs)
     print(f'  {len(dataset)} samples found.')
 
     loader = DataLoader(

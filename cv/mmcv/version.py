@@ -4,8 +4,8 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-# __version__ = '2.0.1' ## forked mmcv version
-__version__ = '1.0.0' 
+# Forked from MMCV 2.0.1; keep 2.x here so mmpose's mmcv version gate matches the API.
+__version__ = '2.0.1' 
 
 def parse_version_info(version_str: str, length: int = 4) -> tuple:
     """Parse a version string into a tuple.

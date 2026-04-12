@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import inspect
 from typing import List, Optional
 
 import torch
@@ -12,6 +13,64 @@ import torch.nn as nn
 from mmpretrain.registry import MODELS
 from mmpretrain.structures import DataSample
 from .base import BaseClassifier
+
+
+def _kwargs_for_backbone_forward(backbone: nn.Module, kw: dict) -> dict:
+    """Drop kwargs the backbone's ``forward`` does not accept (e.g. depth extras)."""
+    sig = inspect.signature(backbone.forward)
+    params = list(sig.parameters.values())
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+        return kw
+    names = {p.name for p in params}
+    return {k: v for k, v in kw.items() if k in names}
+
+
+def _point_clouds_from_data_samples(
+    data_samples: Optional[List[DataSample]],
+    field_name: str = 'human_points_local',
+) -> Optional[torch.Tensor]:
+    """Stack per-sample point clouds when every sample defines ``field_name``.
+
+    Datasets should pack points via :class:`PackInputs` ``algorithm_keys`` (e.g.
+    ``human_points_local``) so each :class:`DataSample` holds a ``(N, 3)`` tensor.
+    """
+    if not data_samples:
+        return None
+    tensors = []
+    for sample in data_samples:
+        if sample is None or field_name not in sample:
+            return None
+        pc = sample.get(field_name)
+        if pc is None:
+            return None
+        if not isinstance(pc, torch.Tensor):
+            pc = torch.as_tensor(pc, dtype=torch.float32)
+        if pc.dim() != 2 or pc.size(-1) != 3:
+            raise ValueError(
+                f'{field_name} must be (N, 3), got {tuple(pc.shape)}')
+        tensors.append(pc)
+    return torch.stack(tensors, dim=0)
+
+
+def _image_names_from_data_samples(
+    data_samples: Optional[List[DataSample]],
+) -> Optional[list]:
+    """Return ``img_path`` for each sample when all define it in metainfo.
+
+    Enables :class:`~mmpretrain.models.backbones.vision_transformer_with_depth.VisionTransformerWithDepth`
+    to resolve ``depth_embed_path`` files during ``loss`` / ``predict``.
+    """
+    if not data_samples:
+        return None
+    names = []
+    for sample in data_samples:
+        if sample is None or not getattr(sample, 'metainfo', None):
+            return None
+        path = sample.metainfo.get('img_path')
+        if not path:
+            return None
+        names.append(path)
+    return names
 
 
 @MODELS.register_module()
@@ -121,7 +180,15 @@ class ImageClassifier(BaseClassifier):
             - If ``mode="loss"``, return a dict of tensor.
         """
         if mode == 'tensor':
-            feats = self.extract_feat(inputs)
+            image_names = _image_names_from_data_samples(data_samples)
+            point_clouds = _point_clouds_from_data_samples(data_samples)
+            if point_clouds is not None:
+                point_clouds = point_clouds.to(
+                    device=inputs.device, non_blocking=True)
+            feats = self.extract_feat(
+                inputs,
+                image_names=image_names,
+                point_clouds=point_clouds)
             return self.head(feats) if self.with_head else feats
         elif mode == 'loss':
             return self.loss(inputs, data_samples)
@@ -130,7 +197,13 @@ class ImageClassifier(BaseClassifier):
         else:
             raise RuntimeError(f'Invalid mode "{mode}".')
 
-    def extract_feat(self, inputs, stage='neck', depth_embeddings=None, image_names=None, **kwargs):
+    def extract_feat(self,
+                     inputs,
+                     stage='neck',
+                     depth_embeddings=None,
+                     image_names=None,
+                     point_clouds=None,
+                     **kwargs):
         """Extract features from the input tensor with shape (N, C, ...).
         
         Now supports depth embeddings! 
@@ -152,6 +225,8 @@ class ImageClassifier(BaseClassifier):
                 (B, num_depth_tokens, depth_embed_dim). Passed to backbone if supported.
             image_names (list[str], optional): List of image names for loading depth
                 embeddings. Passed to backbone if supported.
+            point_clouds (torch.Tensor, optional): ``(B, N, 3)`` for live LiDAR-HMR encoding
+                when the backbone implements it (see ``VisionTransformerWithDepth``).
             **kwargs: Other keyword arguments (forwarded to backbone).
 
         Returns:
@@ -215,7 +290,15 @@ class ImageClassifier(BaseClassifier):
 
         # Pass depth embeddings and image names to backbone if it supports them
         # Most backbones will ignore these kwargs, but VisionTransformerWithDepth will use them
-        x = self.backbone(inputs, depth_embeddings=depth_embeddings, image_names=image_names, **kwargs)
+        backbone_kw = dict(kwargs)
+        if depth_embeddings is not None:
+            backbone_kw['depth_embeddings'] = depth_embeddings
+        if image_names is not None:
+            backbone_kw['image_names'] = image_names
+        if point_clouds is not None:
+            backbone_kw['point_clouds'] = point_clouds
+        backbone_kw = _kwargs_for_backbone_forward(self.backbone, backbone_kw)
+        x = self.backbone(inputs, **backbone_kw)
 
         if stage == 'backbone':
             return x
@@ -242,7 +325,15 @@ class ImageClassifier(BaseClassifier):
         Returns:
             dict[str, Tensor]: a dictionary of loss components
         """
-        feats = self.extract_feat(inputs)
+        image_names = _image_names_from_data_samples(data_samples)
+        point_clouds = _point_clouds_from_data_samples(data_samples)
+        if point_clouds is not None:
+            point_clouds = point_clouds.to(
+                device=inputs.device, non_blocking=True)
+        feats = self.extract_feat(
+            inputs,
+            image_names=image_names,
+            point_clouds=point_clouds)
         return self.head.loss(feats, data_samples)
 
     def predict(self,
@@ -259,7 +350,15 @@ class ImageClassifier(BaseClassifier):
             **kwargs: Other keyword arguments accepted by the ``predict``
                 method of :attr:`head`.
         """
-        feats = self.extract_feat(inputs)
+        image_names = _image_names_from_data_samples(data_samples)
+        point_clouds = _point_clouds_from_data_samples(data_samples)
+        if point_clouds is not None:
+            point_clouds = point_clouds.to(
+                device=inputs.device, non_blocking=True)
+        feats = self.extract_feat(
+            inputs,
+            image_names=image_names,
+            point_clouds=point_clouds)
         return self.head.predict(feats, data_samples, **kwargs)
 
     def get_layer_depth(self, param_name: str):

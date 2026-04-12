@@ -62,8 +62,10 @@ class Bedlam2Dataset(BaseDataset):
     transform.
 
     Args:
-        data_root (str): Absolute path to the BEDLAM2 data root directory
-            (contains ``data/label/``, ``data/frames/``, etc.).
+        data_root (str): Absolute path to the BEDLAM2 **release root** — the
+            directory that **contains** a ``data/`` subdirectory (``label``,
+            ``frames``, ``depth`` live under ``data/``). Do **not** pass the
+            path to ``data`` itself (that would duplicate ``data`` in joins).
         seq_paths (list[str], optional): List of relative sequence paths
             like ``"folder/seq.npz"``, relative to ``data_root/data/label/``.
             Mutually exclusive with ``seq_paths_file``.

@@ -17,6 +17,7 @@ This class inherits from ``BasePoseEstimator`` and implements only the
 
 from __future__ import annotations
 
+import inspect
 from typing import Optional, Union
 
 import torch
@@ -26,6 +27,26 @@ from mmpose.registry import MODELS
 from mmpose.utils.typing import (ConfigType, OptConfigType, OptMultiConfig,
                                   SampleList)
 from .base import BasePoseEstimator
+
+
+def _human_points_from_pose_samples(data_samples: Optional[SampleList]):
+    """Stack ``human_points_local`` from each sample when all define it."""
+    if not data_samples:
+        return None
+    tensors = []
+    for s in data_samples:
+        if s is None or 'human_points_local' not in s:
+            return None
+        pc = s.get('human_points_local')
+        if pc is None:
+            return None
+        if not isinstance(pc, torch.Tensor):
+            pc = torch.as_tensor(pc, dtype=torch.float32)
+        if pc.dim() != 2 or pc.size(-1) != 3:
+            raise ValueError(
+                f'human_points_local must be (N, 3), got {tuple(pc.shape)}')
+        tensors.append(pc)
+    return torch.stack(tensors, dim=0)
 
 
 @MODELS.register_module()
@@ -63,6 +84,21 @@ class RGBDPose3dEstimator(BasePoseEstimator):
             metainfo=metainfo,
         )
 
+    def extract_feat(
+        self,
+        inputs: Tensor,
+        data_samples: Optional[SampleList] = None,
+    ):
+        """Forward backbone; pass LiDAR point clouds when the backbone supports it."""
+        point_clouds = _human_points_from_pose_samples(data_samples)
+        if point_clouds is not None:
+            point_clouds = point_clouds.to(
+                device=inputs.device, dtype=torch.float32, non_blocking=True)
+        sig = inspect.signature(self.backbone.forward)
+        if point_clouds is not None and 'point_clouds' in sig.parameters:
+            return self.backbone(inputs, point_clouds=point_clouds)
+        return self.backbone(inputs)
+
     def loss(self, inputs: Tensor, data_samples: SampleList) -> dict:
         """Forward pass + loss computation.
 
@@ -73,7 +109,7 @@ class RGBDPose3dEstimator(BasePoseEstimator):
         Returns:
             Tuple of ``(losses_dict, pred_dict)``.
         """
-        feats = self.extract_feat(inputs)    # (feat,) tuple
+        feats = self.extract_feat(inputs, data_samples)
         losses, _ = self.head.loss(feats, data_samples,
                                    train_cfg=self.train_cfg)
         return losses
@@ -88,7 +124,7 @@ class RGBDPose3dEstimator(BasePoseEstimator):
         Returns:
             List of ``PoseDataSample`` with ``pred_instances`` set.
         """
-        feats = self.extract_feat(inputs)
+        feats = self.extract_feat(inputs, data_samples)
         preds = self.head.predict(feats, data_samples, test_cfg=self.test_cfg)
 
         # Store predictions directly — no 2D affine back-transform needed

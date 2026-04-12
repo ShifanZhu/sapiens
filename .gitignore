@@ -20,3 +20,10 @@ __pycache__/
 pose/demo/data/*
 runs/*
 */.claude/*
+
+# Local / large (do not commit)
+lidarh26m.zip
+tmp_lidar_hmr_smoke/
+BEDLAM2_ROOT
+third_party/
+.codex/

@@ -31,6 +31,7 @@ from .v2v_net import V2VNet
 from .vgg import VGG
 from .vipnas_mbv3 import ViPNAS_MobileNetV3
 from .vipnas_resnet import ViPNAS_ResNet
+from .sapiens_rgb_lidar_fuse import SapiensBackboneRGBLidarFuse
 from .sapiens_rgbd import SapiensBackboneRGBD
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     'MSPN', 'ResNeSt', 'VGG', 'TCN', 'ViPNAS_ResNet', 'ViPNAS_MobileNetV3',
     'LiteHRNet', 'V2VNet', 'HRFormer', 'PyramidVisionTransformer',
     'PyramidVisionTransformerV2', 'SwinTransformer', 'SapiensBackboneRGBD',
+    'SapiensBackboneRGBLidarFuse',
 ]

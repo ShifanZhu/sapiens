@@ -16,6 +16,9 @@ Transform chain (train):
 Transform chain (val):
     LoadBedlamLabels → CropPersonRGBD → SubtractRootJoint → PackBedlamInputs
 
+Optional (LiDAR-HMR / ViT geometry tokens, before ``SubtractRootJoint``):
+    … → CropPersonRGBD → :class:`BedlamDepthToPointCloud` → …
+
 The ``results`` dict keys used across the chain:
 
   Input (from dataset.load_data_list):
@@ -33,6 +36,9 @@ The ``results`` dict keys used across the chain:
     pelvis_abs   (3,)      float32 original pelvis XYZ
     pelvis_depth (1,)      float32 pelvis forward distance (X)
     pelvis_uv    (2,)      float32 pelvis pixel position normalised to [-1, 1]
+
+  Added by BedlamDepthToPointCloud (optional, before PackBedlamInputs):
+    human_points_local   (N, 3) float32  pelvis-relative 3D from cropped depth
 
   Produced by PackBedlamInputs:
     inputs               Tensor (4, H, W)   stacked RGBD
@@ -178,7 +184,9 @@ class LoadBedlamLabels(BaseTransform):
 
         folder_name = cached['folder_name']
         seq_name = cached['seq_name']
-        intrinsic = cached['intrinsic_matrix']     # (3, 3)
+        intrinsic = cached['intrinsic_matrix']     # (3, 3) or (n_frames, 3, 3)
+        if intrinsic.ndim == 3:
+            intrinsic = intrinsic[frame_idx]
         joints_raw = cached['joints_cam'][body_idx, frame_idx]  # (127, 3)
 
         # ── Bounding box from joints_2d ────────────────────────────────────
@@ -417,6 +425,65 @@ class CropPersonRGBD(BaseTransform):
         return results
 
 
+# ── Transform 3b: depth → point cloud (for LiDAR-HMR / geometry encoders) ─────
+
+@TRANSFORMS.register_module()
+class BedlamDepthToPointCloud(BaseTransform):
+    """Sample 3D points from the cropped depth map for LiDAR-style encoders.
+
+    Runs **after** :class:`CropPersonRGBD` so ``depth`` and ``K`` match the
+    resized crop. Uses the BEDLAM2 projection convention (see
+    :class:`SubtractRootJoint`): ``u = fx*(-Y/X)+cx``, ``v = fy*(-Z/X)+cy`` with
+    **X forward** in metres. Assumes ``depth[v,u]`` stores that forward distance
+    **X** (consistent with pelvis depth as X).
+
+    Subtracts the pelvis joint (index 0 in the active 70-joint set) so points
+    are **pelvis-root-relative**, roughly analogous to ``human_points_local``.
+
+    **Added keys:** ``human_points_local`` — ``np.ndarray`` ``(num_points, 3)`` float32.
+
+    Args:
+        num_points (int): Number of points to sample (e.g. 1024 for LiDAR-HMR).
+        min_depth (float): Ignore smaller depth values.
+    """
+
+    def __init__(self, num_points: int = 1024, min_depth: float = 1e-3) -> None:
+        super().__init__()
+        self.num_points = num_points
+        self.min_depth = min_depth
+
+    def transform(self, results: dict) -> dict:
+        depth = results.get('depth')
+        if depth is None:
+            raise ValueError('BedlamDepthToPointCloud requires depth in results')
+        K = results['K']
+        joints = results['joints_cam']  # (70, 3), camera space before root subtract
+        pelvis = joints[_PELVIS_IDX].astype(np.float32)
+
+        H, W = depth.shape[:2]
+        fx, fy = float(K[0, 0]), float(K[1, 1])
+        cx, cy = float(K[0, 2]), float(K[1, 2])
+
+        mask = (depth > self.min_depth) & (depth < _DEPTH_MAX_METERS)
+        vv, uu = np.where(mask)
+        n_valid = len(uu)
+        if n_valid == 0:
+            results['human_points_local'] = np.zeros(
+                (self.num_points, 3), dtype=np.float32)
+            return results
+
+        rng = np.random.default_rng()
+        pick = rng.choice(n_valid, size=self.num_points, replace=n_valid < self.num_points)
+        u = uu[pick].astype(np.float32)
+        v = vv[pick].astype(np.float32)
+        X = depth[vv[pick], uu[pick]].astype(np.float32)
+        Y = -X * (u - cx) / fx
+        Z = -X * (v - cy) / fy
+        xyz = np.stack([X, Y, Z], axis=-1)
+        results['human_points_local'] = (xyz - pelvis).astype(np.float32)
+        return results
+
+
 # ── Transform 4: SubtractRootJoint ───────────────────────────────────────────
 
 @TRANSFORMS.register_module()
@@ -533,6 +600,13 @@ class PackBedlamInputs(BaseTransform):
             if key in results:
                 meta[key] = results[key]
         data_sample.set_metainfo(meta)
+
+        if 'human_points_local' in results:
+            hpl = results['human_points_local']
+            if not isinstance(hpl, torch.Tensor):
+                hpl = torch.from_numpy(
+                    np.ascontiguousarray(hpl)).float()
+            data_sample.set_field(hpl, 'human_points_local')
 
         packed = {
             'inputs': inputs,

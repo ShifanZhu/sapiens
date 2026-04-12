@@ -172,3 +172,89 @@ def load_sapiens_pretrained_rgbd(
             print(f'[rgbd_weights] Shape mismatch ({len(shape_mismatch)}):')
             for s in shape_mismatch:
                 print(s)
+
+
+def load_sapiens_pretrained_rgb_fusion_vit(
+    model: nn.Module,
+    ckpt_path: str,
+    verbose: bool = True,
+) -> None:
+    """Load Sapiens RGB pretrain into ``VisionTransformerWithDepth`` (3-channel).
+
+    Same remapping / pos-interpolation as RGBD, but **no** 3→4 patch-embed
+    expansion. Keys only in the fusion model (``depth_proj``, LiDAR submodule,
+    ``missing_depth_embed``, …) stay randomly initialised.
+    """
+    ckpt_path = Path(ckpt_path)
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f'Checkpoint not found: {ckpt_path}')
+
+    raw = torch.load(ckpt_path, map_location='cpu', weights_only=True)
+
+    if isinstance(raw, dict) and 'state_dict' in raw:
+        src = raw['state_dict']
+    elif isinstance(raw, dict) and 'model' in raw:
+        src = raw['model']
+    else:
+        src = raw
+
+    remapped: dict[str, torch.Tensor] = {}
+    for k, v in src.items():
+        remapped[f'backbone.vit.{k}'] = v
+
+    model_sd = model.state_dict()
+
+    pe_key = 'backbone.vit.pos_embed'
+    if pe_key in remapped and pe_key in model_sd:
+        src_pe = remapped[pe_key]
+        tgt_pe = model_sd[pe_key]
+        tgt_N = tgt_pe.shape[1]
+        try:
+            pr = model.backbone.vit.patch_resolution
+            tgt_h, tgt_w = pr
+        except AttributeError:
+            tgt_h = tgt_w = int(tgt_N ** 0.5)
+
+        src_N_no_cls = src_pe.shape[1] - 1
+        src_g = int(src_N_no_cls ** 0.5)
+
+        interp = _interp_pos_embed(src_pe, tgt_h, tgt_w, has_cls=True)
+        remapped[pe_key] = interp.to(src_pe.dtype)
+        if verbose:
+            print(f'[rgb_fusion_weights] pos_embed: {src_g}×{src_g} → '
+                  f'{tgt_h}×{tgt_w} (bicubic)')
+
+    remapped.pop('backbone.vit.cls_token', None)
+
+    load_sd: dict[str, torch.Tensor] = {}
+    missing: list[str] = []
+    shape_mismatch: list[str] = []
+
+    for k, v_model in model_sd.items():
+        if not k.startswith('backbone.'):
+            continue
+        if k not in remapped:
+            missing.append(k)
+            continue
+        if v_model.shape != remapped[k].shape:
+            shape_mismatch.append(
+                f'  {k}: model {v_model.shape} vs ckpt {remapped[k].shape}')
+            continue
+        load_sd[k] = remapped[k]
+
+    model.load_state_dict(load_sd, strict=False)
+
+    if verbose:
+        n_backbone = sum(1 for k in model_sd if k.startswith('backbone.'))
+        print(f'[rgb_fusion_weights] Loaded {len(load_sd)} / {n_backbone} '
+              f'backbone tensors')
+        head_params = sum(1 for k in model_sd if not k.startswith('backbone.'))
+        print(f'[rgb_fusion_weights] Head ({head_params} tensors) randomly '
+              f'initialised')
+        if missing:
+            print(f'[rgb_fusion_weights] Missing ({len(missing)}): '
+                  f'{missing[:8]}{"..." if len(missing) > 8 else ""}')
+        if shape_mismatch:
+            print(f'[rgb_fusion_weights] Shape mismatch ({len(shape_mismatch)}):')
+            for s in shape_mismatch:
+                print(s)

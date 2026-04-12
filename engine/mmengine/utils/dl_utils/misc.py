@@ -4,7 +4,6 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import pkgutil
 from typing import Optional, Tuple, Union
 
 import numpy as np
@@ -109,7 +108,9 @@ def mmcv_full_available() -> bool:
     """
     try:
         import mmcv  # noqa: F401
-    except ImportError:
+        from mmcv.ops import SyncBatchNorm  # noqa: F401
+        return True
+    except Exception:
+        # Extension built against a different PyTorch ABI (e.g. after upgrading
+        # torch) — treat as mmcv-lite so runners skip mmcv.ops SyncBatchNorm.
         return False
-    ext_loader = pkgutil.find_loader('mmcv._ext')
-    return ext_loader is not None
