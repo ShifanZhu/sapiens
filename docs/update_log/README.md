@@ -4,6 +4,8 @@ Session-level changelog for the Sapiens project.
 
 | Date | Summary |
 |---|---|
+| [2026-04-21](2026-04-21.md) | Panoptic Kinect1 offline preprocessor: `depthdata.dat` reader, toolbox-aligned unproject/project, HD sync, RGB-depth splat + overlays (`pose/tools/panoptic/`) |
+| [2026-04-20](2026-04-20.md) | Panoptic Kinect1: optional GT COCO-19 skeleton overlay from `hdPose3d_stage1_coco19` (`--gt-pose`, `panoptic_body3d.py`) |
 | [2026-03-23](2026-03-23.md) | Reduce max depth 20→10 m; filter far-person (all joints ≥ 10 m) and OOB (≥ 50% joints out of image) for train + val |
 | [2026-03-21](2026-03-21.md) | Code + doc architecture review; fix broken links/stale data in docs; add bedlam2/README.md navigation hub; RFC 006 |
 | [2026-03-20](2026-03-20.md) | Fix stale mpjpe key purge: before_run → before_train (runs after checkpoint load) |
