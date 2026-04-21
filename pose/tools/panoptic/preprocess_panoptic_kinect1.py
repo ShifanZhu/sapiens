@@ -30,10 +30,12 @@ Example::
     --sequence-dir /path/to/170224_haggling_b2 \\
     --output-dir /path/out/170224_haggling_b2_kinect1 \\
     --kinect-node 1 \\
-    --hd-output-frames 500 501 \\
-    --max-frames 2 \\
-    --gt-pose \\
-    --body3d-scene-offset 546
+    --all-hd-frames \\
+    --gt-pose --body3d-scene-offset 546
+
+  # Or a subset of frames only::
+
+    --hd-output-frames 500 501 --max-frames 2
 """
 
 from __future__ import annotations
@@ -73,6 +75,7 @@ from tools.panoptic.panoptic_body3d import (
     undistort_uv,
 )
 from tools.panoptic.sync_tables import (
+    all_hd_output_frames,
     hd_psync_index_for_output_frame,
     load_ksync,
     load_psync,
@@ -268,10 +271,16 @@ def main(argv: List[str] | None = None) -> int:
     p.add_argument(
         '--hd-output-frames',
         type=int,
-        nargs='+',
-        required=True,
-        help='HD frame labels matching toolbox output numbering (e.g. 500 501). '
-        'Synced via synctables using the same +2 rule as demo_kinoptic_gen_ptcloud.',
+        nargs='*',
+        default=None,
+        metavar='N',
+        help='HD frame labels (e.g. 500 501). Omit when using --all-hd-frames.',
+    )
+    p.add_argument(
+        '--all-hd-frames',
+        action='store_true',
+        help='Process every valid HD label from synctables (length of HD univ_time '
+        'minus one). Use --max-frames to cap for testing.',
     )
     p.add_argument(
         '--relax-sync',
@@ -307,6 +316,8 @@ def main(argv: List[str] | None = None) -> int:
         'pairing with hd-output-frame 500). Default: %(default)s.',
     )
     args = p.parse_args(argv)
+    if args.all_hd_frames and args.hd_output_frames:
+        p.error('Use either --all-hd-frames or --hd-output-frames, not both')
 
     seq = os.path.abspath(args.sequence_dir)
     out_root = os.path.abspath(args.output_dir)
@@ -314,7 +325,17 @@ def main(argv: List[str] | None = None) -> int:
 
     ksync = load_ksync(seq)
     psync = load_psync(seq)
-    frames = args.hd_output_frames
+    if args.all_hd_frames:
+        frames = all_hd_output_frames(psync)
+        print(
+            f'--all-hd-frames: {len(frames)} HD frames from synctables '
+            f'(hd_output_frame 0..{len(frames)-1 if frames else 0}).',
+            flush=True,
+        )
+    elif args.hd_output_frames:
+        frames = list(args.hd_output_frames)
+    else:
+        p.error('Provide --hd-output-frames N [N ...] or --all-hd-frames')
     if args.max_frames > 0:
         frames = frames[: args.max_frames]
 
