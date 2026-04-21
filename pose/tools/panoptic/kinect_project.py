@@ -15,6 +15,35 @@ from typing import Tuple
 import numpy as np
 
 
+def undistort_color_uv_to_new_k(
+    uv_dist: np.ndarray,
+    K_color: np.ndarray,
+    dist_color: np.ndarray,
+    new_K: np.ndarray,
+) -> np.ndarray:
+    """Map distorted Kinect color pixels to undistorted pixel coords (``P=new_K``).
+
+    Matches ``cv2.undistort(..., P=new_K)`` / ``cv2.undistortPoints(..., P=new_K)``:
+    depth splatted in this space aligns with ``rgb_undistort`` images.
+
+    Non-finite inputs copy through as NaN so splat can skip them.
+    """
+    import cv2
+
+    uv = np.asarray(uv_dist, dtype=np.float64).reshape(-1, 2)
+    out = np.full_like(uv, np.nan, dtype=np.float64)
+    fin = np.isfinite(uv).all(axis=1)
+    if not np.any(fin):
+        return out
+    K = np.asarray(K_color, dtype=np.float64)
+    dist = np.asarray(dist_color, dtype=np.float64).reshape(-1)
+    P = np.asarray(new_K, dtype=np.float64)
+    pts = uv[fin].reshape(-1, 1, 2)
+    mapped = cv2.undistortPoints(pts, K, dist, P=P)
+    out[fin] = mapped.reshape(-1, 2)
+    return out
+
+
 def _as_float_mat(x) -> np.ndarray:
     return np.asarray(x, dtype=np.float64)
 
@@ -53,20 +82,20 @@ def unproject_depth_pixels(
     for _ in range(5):
         r2 = x * x + y * y
         icdist = (
-            (1.0 + ((k[1 + 7] * r2 + k[1 + 6]) * r2 + k[1 + 5]) * r2)
-            / (1.0 + ((k[1 + 4] * r2 + k[1 + 1]) * r2 + k[1 + 0]) * r2)
+            (1.0 + ((k[7] * r2 + k[6]) * r2 + k[5]) * r2)
+            / (1.0 + ((k[4] * r2 + k[1]) * r2 + k[0]) * r2)
         )
         delta_x = (
-            2 * k[1 + 2] * x * y
-            + k[1 + 3] * (r2 + 2 * x * x)
-            + k[1 + 8] * r2
-            + k[1 + 9] * r2 * r2
+            2 * k[2] * x * y
+            + k[3] * (r2 + 2 * x * x)
+            + k[8] * r2
+            + k[9] * r2 * r2
         )
         delta_y = (
-            k[1 + 2] * (r2 + 2 * y * y)
-            + 2 * k[1 + 3] * x * y
-            + k[1 + 10] * r2
-            + k[1 + 11] * r2 * r2
+            k[2] * (r2 + 2 * y * y)
+            + 2 * k[3] * x * y
+            + k[10] * r2
+            + k[11] * r2 * r2
         )
         x = (x0 - delta_x) * icdist
         y = (y0 - delta_y) * icdist
@@ -179,22 +208,68 @@ def splat_depth_to_rgb(
     *,
     rgb_h: int,
     rgb_w: int,
+    supersample: int = 2,
+    pool: str = 'min',
 ) -> Tuple[np.ndarray, np.ndarray]:
     """For each depth pixel, splat Z onto RGB grid with z-buffer (min depth wins).
+
+    ``supersample`` > 1 splats onto a finer grid (``rgb * supersample``) with the same
+    min-depth rule, then pools back to full resolution.
+
+    ``pool`` (only used when ``supersample`` > 1):
+
+    - ``min``: min over each ``ss×ss`` macro block (closest surface; default z-buffer).
+    - ``mean``: mean of **finite** subcell depths per macro block (denser, smoother;
+      can mix depths at edges — use for visualization / denser labels when advised).
 
     Args:
         depth_mm: (H, W)
         uv_rgb: (H*W, 2) pixel coordinates; invalid can be nan.
         rgb_h, rgb_w: RGB image size.
+        supersample: Grid multiplier for the splat phase (1 = legacy single-cell bin).
+        pool: ``min`` or ``mean`` (supersample > 1 only).
 
     Returns:
         aligned_z: (rgb_h, rgb_w) float32 depth in **metres**; 0 = empty.
-        hits: int count of writes per pixel (for debugging).
+        hits: int count of writes per fine cell (if supersample>1, sum pooled to RGB).
     """
     z = depth_mm.astype(np.float64).ravel() * 0.001  # metres
     uv = np.asarray(uv_rgb, dtype=np.float64).reshape(-1, 2)
-    out = np.full((rgb_h, rgb_w), np.inf, dtype=np.float32)
-    hits = np.zeros((rgb_h, rgb_w), dtype=np.int32)
+    ss = int(supersample)
+    if ss < 1:
+        raise ValueError('supersample must be >= 1')
+    pool = str(pool).lower().strip()
+    if pool not in ('min', 'mean'):
+        raise ValueError("pool must be 'min' or 'mean'")
+
+    if ss == 1:
+        out = np.full((rgb_h, rgb_w), np.inf, dtype=np.float32)
+        hits = np.zeros((rgb_h, rgb_w), dtype=np.int32)
+        for i in range(z.size):
+            zi = z[i]
+            if zi <= 0:
+                continue
+            u, v = uv[i, 0], uv[i, 1]
+            if not np.isfinite(u) or not np.isfinite(v):
+                continue
+            ui = int(round(u))
+            vi = int(round(v))
+            if ui < 0 or vi < 0 or ui >= rgb_w or vi >= rgb_h:
+                continue
+            if zi < out[vi, ui]:
+                out[vi, ui] = zi
+                hits[vi, ui] = 1
+            elif zi == out[vi, ui]:
+                hits[vi, ui] += 1
+        out_finite = np.isfinite(out)
+        out_z = np.zeros_like(out, dtype=np.float32)
+        out_z[out_finite] = out[out_finite]
+        return out_z, hits
+
+    Hf = rgb_h * ss
+    Wf = rgb_w * ss
+    out = np.full((Hf, Wf), np.inf, dtype=np.float32)
+    hits_f = np.zeros((Hf, Wf), dtype=np.int32)
 
     for i in range(z.size):
         zi = z[i]
@@ -203,17 +278,35 @@ def splat_depth_to_rgb(
         u, v = uv[i, 0], uv[i, 1]
         if not np.isfinite(u) or not np.isfinite(v):
             continue
-        ui = int(round(u))
-        vi = int(round(v))
-        if ui < 0 or vi < 0 or ui >= rgb_w or vi >= rgb_h:
+        # Subcells partition each RGB pixel into ss×ss bins (continuous u,v coords).
+        ui = int(np.floor(float(u) * ss))
+        vi = int(np.floor(float(v) * ss))
+        if ui < 0 or vi < 0 or ui >= Wf or vi >= Hf:
             continue
         if zi < out[vi, ui]:
             out[vi, ui] = zi
-            hits[vi, ui] = 1
+            hits_f[vi, ui] = 1
         elif zi == out[vi, ui]:
-            hits[vi, ui] += 1
+            hits_f[vi, ui] += 1
 
-    out_finite = np.isfinite(out)
-    out_z = np.zeros_like(out, dtype=np.float32)
-    out_z[out_finite] = out[out_finite]
+    if pool == 'min':
+        # use inf (not nan) for empty so all-inf blocks min to inf without warnings
+        bl = np.where(np.isfinite(out), out, np.inf)
+        tmp = bl.reshape(rgb_h, ss, rgb_w, ss)
+        macro = np.min(tmp, axis=(1, 3))
+        out_z = np.where(np.isfinite(macro) & (macro < np.inf), macro, 0.0).astype(
+            np.float32
+        )
+        hf = np.where(np.isfinite(out), hits_f, 0).reshape(rgb_h, ss, rgb_w, ss)
+        hits = hf.sum(axis=(1, 3)).astype(np.int32)
+    else:
+        # Mean of finite subcell depths per macro pixel (empty subcells ignored).
+        bl = np.where(np.isfinite(out), out, np.nan)
+        blocks = bl.reshape(rgb_h, rgb_w, ss * ss)
+        valid_n = np.isfinite(blocks).sum(axis=2).astype(np.float64)
+        macro = np.nansum(blocks, axis=2) / np.maximum(valid_n, 1.0)
+        macro = np.where(valid_n > 0, macro, np.nan)
+        out_z = np.where(np.isfinite(macro), macro, 0.0).astype(np.float32)
+        fin = np.isfinite(bl.reshape(rgb_h, rgb_w, ss * ss))
+        hits = fin.sum(axis=2).astype(np.int32)
     return out_z, hits

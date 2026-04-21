@@ -16,7 +16,7 @@ from __future__ import annotations
 import glob
 import json
 import os
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -96,3 +96,14 @@ def hd_psync_index_for_output_frame(hd_output_frame: int) -> int:
     ``hd_output_frame + 1``.
     """
     return hd_output_frame + 1
+
+
+def all_hd_output_frames(psync: dict) -> List[int]:
+    """Every HD output frame label that maps to a valid ``psync['hd']['univ_time']`` index.
+
+    With ``py_idx = hd_output_frame + 1`` (see ``hd_psync_index_for_output_frame``),
+    valid labels are ``0 .. len(univ_time) - 2`` inclusive, i.e. ``len(univ_time) - 1``
+    frames total — matching ``--all-hd-frames`` help text.
+    """
+    n = len(psync['hd']['univ_time'])
+    return list(range(n - 1))
