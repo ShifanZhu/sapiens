@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Literal, Tuple
 
 import numpy as np
 
@@ -46,6 +46,64 @@ def undistort_color_uv_to_new_k(
 
 def _as_float_mat(x) -> np.ndarray:
     return np.asarray(x, dtype=np.float64)
+
+
+def normalize_dist_coeffs_for_opencv(dist: np.ndarray) -> np.ndarray:
+    """Return a 1D distortion vector that ``cv2.getOptimalNewCameraMatrix`` accepts.
+
+    OpenCV allows **4, 5, 8, 12, or 14** coefficients. CMU Panoptic ``kcalibration``
+    depth entries are often **7** floats: ``[k1,k2,p1,p2,k3, 1000, 0]`` (Kinect/MATLAB
+    extras after the standard rational model). We keep the **first five** so depth
+    undistort matches ``unproject_depth_pixels`` which only uses ``dist[:5]``.
+    """
+    d = np.asarray(dist, dtype=np.float64).reshape(-1)
+    n = int(d.size)
+    if n in (4, 5, 8, 12, 14):
+        return d.copy()
+    if n == 7:
+        return d[:5].copy()
+    if n > 14:
+        return d[:14].copy()
+    if n == 6:
+        return d[:5].copy()
+    # n in {1,2,3} — pad to 5
+    out = np.zeros(5, dtype=np.float64)
+    out[:n] = d
+    return out
+
+
+def undistort_depth_map_nearest(
+    depth_mm: np.ndarray,
+    K_depth: np.ndarray,
+    dist_depth: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Undistort depth in the **depth camera** image plane (``depth → undistort``).
+
+    Uses ``cv2.initUndistortRectifyMap`` + ``cv2.remap`` with ``INTER_NEAREST`` so depth
+    values are not blended across discontinuities. Returns the rectified depth map and
+    ``new_K_depth`` for pinhole unprojection with **zero** distortion coeffs.
+
+    Shape and dtype: output matches ``depth_mm`` (float32, metres scale still mm).
+    """
+    import cv2
+
+    h, w = depth_mm.shape
+    K = np.asarray(K_depth, dtype=np.float64)
+    dist = normalize_dist_coeffs_for_opencv(dist_depth)
+    new_k, _ = cv2.getOptimalNewCameraMatrix(K, dist, (w, h), alpha=1.0)
+    map1, map2 = cv2.initUndistortRectifyMap(
+        K, dist, None, new_k, (w, h), cv2.CV_32FC1
+    )
+    d = depth_mm.astype(np.float32)
+    out = cv2.remap(
+        d,
+        map1,
+        map2,
+        interpolation=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    return out, new_k
 
 
 def unproject_depth_pixels(
@@ -153,36 +211,65 @@ def unproject_depth_release(
     depth_mm: np.ndarray,
     cam_calib: dict,
     gen_color_map: bool,
-) -> Tuple[np.ndarray, np.ndarray | None]:
-    """MATLAB ``unprojectDepth_release.m``.
+    *,
+    depth_unproject_mode: Literal['opencv_undistort_pinhole', 'toolbox_iterative'] = (
+        'opencv_undistort_pinhole'
+    ),
+) -> Tuple[np.ndarray, np.ndarray | None, np.ndarray]:
+    """Depth → world, then optional projection to Kinect color.
 
-    Args:
-        depth_mm: (H, W) depth in millimetres (424, 512) after ``read_depth``.
-        cam_calib: One entry from ``kcalibration['sensors'][i]``.
-        gen_color_map: If True, compute RGB-plane projections for each pixel.
+    Two depth paths:
+
+    - ``opencv_undistort_pinhole`` (default): **depth → undistort (OpenCV nearest remap)
+      → unproject** with ``new_K_depth`` and **zero** distortion (pinhole). This matches
+      the usual ``depth → undistort → unproject`` ordering explicitly.
+
+    - ``toolbox_iterative``: MATLAB-style ``unproject.m`` inverse distortion iteration on
+      the **raw** distorted depth grid (legacy CMU toolbox behavior).
 
     Returns:
-        p3d: (N, 3) world coordinates (cm) after unproject transform.
-        p2d_color: (N, 2) RGB image pixel coords (distorted), or None.
+        p3d: (N, 3) world coordinates (cm).
+        p2d_color: (N, 2) RGB pixels (distorted), or None.
+        depth_mm_for_splat: (H, W) float32 — depth values aligned with ``p3d`` raster
+        order for :func:`splat_depth_to_rgb` (undistorted map in OpenCV mode, else raw).
     """
+    K_depth = cam_calib['K_depth']
+    M_depth = np.asarray(cam_calib['M_depth'], dtype=np.float64)
+    dist_d = np.asarray(cam_calib['distCoeffs_depth'], dtype=np.float64).reshape(-1)
     h, w = depth_mm.shape
     xs = np.arange(w, dtype=np.float64)
     ys = np.arange(h, dtype=np.float64)
     grid_x, grid_y = np.meshgrid(xs, ys)
-    flat = np.stack(
-        [
-            grid_x.ravel(),
-            grid_y.ravel(),
-            depth_mm.astype(np.float64).ravel(),
-        ],
-        axis=1,
-    )
 
-    K_depth = cam_calib['K_depth']
-    M_depth = np.asarray(cam_calib['M_depth'], dtype=np.float64)
-    dist_d = np.asarray(cam_calib['distCoeffs_depth'], dtype=np.float64).reshape(-1)
-
-    p3d = unproject_depth_pixels(flat, K_depth, dist_d, M_depth[0:3, :])
+    if depth_unproject_mode == 'opencv_undistort_pinhole':
+        depth_u, new_k_d = undistort_depth_map_nearest(depth_mm, K_depth, dist_d)
+        flat = np.stack(
+            [
+                grid_x.ravel(),
+                grid_y.ravel(),
+                depth_u.astype(np.float64).ravel(),
+            ],
+            axis=1,
+        )
+        # Pinhole unprojection in the **undistorted** depth image (no radial model).
+        zerod = np.zeros(12, dtype=np.float64)
+        p3d = unproject_depth_pixels(flat, new_k_d, zerod, M_depth[0:3, :])
+        depth_for_splat = depth_u
+    elif depth_unproject_mode == 'toolbox_iterative':
+        flat = np.stack(
+            [
+                grid_x.ravel(),
+                grid_y.ravel(),
+                depth_mm.astype(np.float64).ravel(),
+            ],
+            axis=1,
+        )
+        p3d = unproject_depth_pixels(flat, K_depth, dist_d, M_depth[0:3, :])
+        depth_for_splat = depth_mm.astype(np.float32)
+    else:
+        raise ValueError(
+            f'Unknown depth_unproject_mode: {depth_unproject_mode!r}'
+        )
 
     p2d_color = None
     if gen_color_map:
@@ -199,7 +286,7 @@ def unproject_depth_release(
             dist_c,
             True,
         )
-    return p3d, p2d_color
+    return p3d, p2d_color, depth_for_splat
 
 
 def splat_depth_to_rgb(

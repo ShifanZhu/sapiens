@@ -12,7 +12,10 @@ Pipeline per HD-synced frame (see CMU ``demo_kinoptic_gen_ptcloud.m``):
 2. Map to Kinect color / depth frame indices via ``ksynctables_*.json``.
 3. Load RGB frame from ``kinectVideos/kinect_50_XX.mp4``.
 4. Load depth slice from ``kinect_shared_depth/KINECTNODEX/depthdata.dat``.
-5. Unproject depth with ``kcalibration`` (same as MATLAB ``unprojectDepth_release``).
+5. **Depth → undistort → unproject** (default): OpenCV undistorts the depth map in the
+   depth camera plane (nearest-neighbor remap), then pinhole-unprojects with
+   ``new_K_depth`` and zero distortion. Use ``--depth-unproject-mode toolbox_iterative``
+   for legacy MATLAB-style inverse distortion inside ``unproject.m`` on raw depth.
 6. Project 3D points onto the Kinect RGB sensor (``PoseProject2D``).
 7. Optionally undistort the RGB image with OpenCV (``K_color``, ``distCoeffs_color``).
 8. Splat a z-buffered depth map in RGB pixel space using **undistorted** intrinsics
@@ -248,6 +251,7 @@ def run_one_frame(
     splat_supersample: int = 2,
     splat_pool: str = 'mean',
     depth_mean_fill_ksize: int = 0,
+    depth_unproject_mode: str = 'opencv_undistort_pinhole',
 ) -> Dict[str, Any]:
     kcal = _load_kcal(sequence_dir)
     sensors: List[dict] = kcal['sensors']
@@ -296,11 +300,16 @@ def run_one_frame(
     new_k = _compute_new_k(Kc, distc, rgb_w, rgb_h)
     rgb_u = _undistort_rgb_with_new_k(rgb_bgr, Kc, distc, new_k)
 
-    _p3d, uv_dist = unproject_depth_release(depth_mm, cam, gen_color_map=True)
+    _p3d, uv_dist, depth_for_splat = unproject_depth_release(
+        depth_mm,
+        cam,
+        gen_color_map=True,
+        depth_unproject_mode=depth_unproject_mode,
+    )
     assert uv_dist is not None
     uv_undist = undistort_color_uv_to_new_k(uv_dist, Kc, distc, new_k)
     aligned_m, _hits = splat_depth_to_rgb(
-        depth_mm,
+        depth_for_splat,
         uv_undist,
         rgb_h=rgb_h,
         rgb_w=rgb_w,
@@ -308,7 +317,7 @@ def run_one_frame(
         pool=splat_pool,
     )
     aligned_m_dist, _hits_d = splat_depth_to_rgb(
-        depth_mm,
+        depth_for_splat,
         uv_dist,
         rgb_h=rgb_h,
         rgb_w=rgb_w,
@@ -326,6 +335,11 @@ def run_one_frame(
     cv2.imwrite(os.path.join(output_dir, f'{stem}_rgb_bgr.jpg'), rgb_bgr)
     cv2.imwrite(os.path.join(output_dir, f'{stem}_rgb_undistort.jpg'), rgb_u)
     np.save(os.path.join(output_dir, f'{stem}_depth_mm_kinect.npy'), depth_mm.astype(np.float32))
+    if depth_unproject_mode == 'opencv_undistort_pinhole':
+        np.save(
+            os.path.join(output_dir, f'{stem}_depth_mm_kinect_undistort.npy'),
+            depth_for_splat.astype(np.float32),
+        )
     np.save(os.path.join(output_dir, f'{stem}_depth_m_aligned_rgb.npy'), aligned_m)
     np.save(
         os.path.join(output_dir, f'{stem}_depth_m_aligned_rgb_distorted.npy'),
@@ -405,6 +419,7 @@ def run_one_frame(
         'splat_supersample': splat_supersample,
         'splat_pool': splat_pool,
         'depth_mean_fill_ksize': depth_mean_fill_ksize,
+        'depth_unproject_mode': depth_unproject_mode,
         'body3d_index_mode': body3d_index_mode,
         'hd_univ_time': sel_t,
         'color_frame_1based': c1,
@@ -418,6 +433,11 @@ def run_one_frame(
             'rgb_bgr': f'{stem}_rgb_bgr.jpg',
             'rgb_undistort': f'{stem}_rgb_undistort.jpg',
             'depth_mm_kinect': f'{stem}_depth_mm_kinect.npy',
+            **(
+                {'depth_mm_kinect_undistort': f'{stem}_depth_mm_kinect_undistort.npy'}
+                if depth_unproject_mode == 'opencv_undistort_pinhole'
+                else {}
+            ),
             'depth_m_aligned_rgb': f'{stem}_depth_m_aligned_rgb.npy',
             'depth_m_aligned_rgb_distorted': f'{stem}_depth_m_aligned_rgb_distorted.npy',
             'overlay_bgr': f'{stem}_overlay_bgr.jpg',
@@ -544,6 +564,15 @@ def main(argv: List[str] | None = None) -> int:
         'neighbors in a K×K box (normalized convolution). 0 disables (default).',
     )
     p.add_argument(
+        '--depth-unproject-mode',
+        choices=('opencv_undistort_pinhole', 'toolbox_iterative'),
+        default='opencv_undistort_pinhole',
+        help='Depth geometry: ``opencv_undistort_pinhole`` (default) runs depth → '
+        'undistort (OpenCV nearest remap) → pinhole unproject with new_K_depth. '
+        '``toolbox_iterative`` uses legacy MATLAB-style inverse depth distortion on the '
+        'raw depth grid (no separate OpenCV depth undistort).',
+    )
+    p.add_argument(
         '--skip-on-sync-error',
         action='store_true',
         help='If HD→Kinect sync matching fails for a frame, log and continue '
@@ -647,6 +676,7 @@ def main(argv: List[str] | None = None) -> int:
                     splat_supersample=args.splat_supersample,
                     splat_pool=args.splat_pool,
                     depth_mean_fill_ksize=args.depth_mean_fill_ksize,
+                    depth_unproject_mode=args.depth_unproject_mode,
                 )
             except RuntimeError as err:
                 if args.skip_on_sync_error and (
