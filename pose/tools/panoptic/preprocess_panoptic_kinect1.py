@@ -17,7 +17,9 @@ Pipeline per HD-synced frame (see CMU ``demo_kinoptic_gen_ptcloud.m``):
 7. Optionally undistort the RGB image with OpenCV (``K_color``, ``distCoeffs_color``).
 8. Splat a z-buffered depth map in RGB pixel space; save overlay for QA.
 9. Optional: project ``hdPose3d_stage1_coco19`` 3D joints onto the same Kinect RGB
-   (``--gt-pose``) and save ``*_pose_gt_*.jpg`` for label QA.
+   (``--gt-pose``) and save ``*_pose_gt_*.jpg`` for label QA. Pose JSON filenames use
+   ``body3DScene_{(hd-output-frame + body3d-scene-offset):08d}.json`` when offset is
+   non-zero (releases often start at 1000+).
 
 This script does **not** train Sapiens — it only writes portable arrays/images for a
 later dataset loader (Part B).
@@ -30,7 +32,8 @@ Example::
     --kinect-node 1 \\
     --hd-output-frames 500 501 \\
     --max-frames 2 \\
-    --gt-pose
+    --gt-pose \\
+    --body3d-scene-offset 546
 """
 
 from __future__ import annotations
@@ -144,6 +147,7 @@ def run_one_frame(
     gt_pose: bool,
     pose_subdir: str,
     pose_conf_thr: float,
+    body3d_scene_offset: int,
 ) -> Dict[str, Any]:
     kcal = _load_kcal(sequence_dir)
     sensors: List[dict] = kcal['sensors']
@@ -200,8 +204,11 @@ def run_one_frame(
 
     gt_pose_info: Dict[str, Any] = {'enabled': gt_pose}
     if gt_pose:
-        pose_path = body3d_scene_path(sequence_dir, hd_output_frame, pose_subdir)
+        body3d_id = hd_output_frame + body3d_scene_offset
+        pose_path = body3d_scene_path(sequence_dir, body3d_id, pose_subdir)
         gt_pose_info['pose_json'] = pose_path
+        gt_pose_info['body3d_scene_index'] = body3d_id
+        gt_pose_info['body3d_scene_offset'] = body3d_scene_offset
         if not os.path.isfile(pose_path):
             gt_pose_info['status'] = 'missing_json'
             print(f'Warning: GT pose JSON not found (skip skeleton overlay): {pose_path}')
@@ -230,6 +237,7 @@ def run_one_frame(
         'sequence_dir': os.path.abspath(sequence_dir),
         'kinect_node': kinect_node,
         'hd_output_frame': hd_output_frame,
+        'body3d_scene_offset': body3d_scene_offset,
         'hd_univ_time': sel_t,
         'color_frame_1based': c1,
         'depth_frame_1based': d1,
@@ -289,6 +297,15 @@ def main(argv: List[str] | None = None) -> int:
         default=0.2,
         help='Min joint confidence to draw edges/points (default: %(default)s).',
     )
+    p.add_argument(
+        '--body3d-scene-offset',
+        type=int,
+        default=0,
+        help='GT pose file index = hd-output-frame + this offset. '
+        'Many releases use body3DScene indices that do not start at 0 '
+        '(e.g. first file body3DScene_00001046.json → use offset 546 when '
+        'pairing with hd-output-frame 500). Default: %(default)s.',
+    )
     args = p.parse_args(argv)
 
     seq = os.path.abspath(args.sequence_dir)
@@ -315,6 +332,7 @@ def main(argv: List[str] | None = None) -> int:
             gt_pose=args.gt_pose,
             pose_subdir=args.pose_subdir,
             pose_conf_thr=args.pose_conf_thr,
+            body3d_scene_offset=args.body3d_scene_offset,
         )
         manifest.append(meta)
 
